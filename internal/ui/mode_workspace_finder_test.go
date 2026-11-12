@@ -181,7 +181,7 @@ func TestWorkspaceFinderModeKeys(t *testing.T) {
 			opts: workspaceFinderOpts(),
 			setup: func(t *testing.T, a *App) {
 				openWorkspaceFinder(t, a)
-				for _, r := range "zzz" {
+				for _, r := range "/zzz" {
 					_ = dispatchModeKey(a, keyPress(r))
 				}
 				if got := modalRows(&a.workspaceFinder); got != 1 {
@@ -288,6 +288,7 @@ func TestWorkspaceFinderModeKeys(t *testing.T) {
 			opts: workspaceFinderOpts(),
 			setup: func(t *testing.T, a *App) {
 				openWorkspaceFinder(t, a)
+				_ = dispatchModeKey(a, keyPress('/'))
 				_ = dispatchModeKey(a, keyPress('b'))
 				if got := modalRows(&a.workspaceFinder); got != 1 {
 					t.Fatalf("precondition: rows = %d, want 1", got)
@@ -359,9 +360,24 @@ func TestWorkspaceFinderModeKeys(t *testing.T) {
 			},
 		},
 		{
-			name:     "a printable key filters the list",
+			name:     "j moves the highlight down before /",
 			opts:     workspaceFinderOpts(),
 			setup:    openWorkspaceFinder,
+			key:      keyPress('j'),
+			wantMode: ModeWorkspaceFinder,
+			assert: func(t *testing.T, a *App, _ tea.Cmd) {
+				if got := modalRows(&a.workspaceFinder); got != 3 {
+					t.Errorf("rows = %d, want 3: j must not filter", got)
+				}
+				if got := modalHighlightedRow(t, a.workspaceFinder.View(120)); !strings.Contains(got, "beta") {
+					t.Errorf("highlighted row = %q, want it to contain %q", got, "beta")
+				}
+			},
+		},
+		{
+			name:     "after /, a printable key filters the list",
+			opts:     workspaceFinderOpts(),
+			setup:    func(t *testing.T, a *App) { openWorkspaceFinder(t, a); _ = dispatchModeKey(a, keyPress('/')) },
 			key:      keyPress('b'),
 			wantMode: ModeWorkspaceFinder,
 			assert: func(t *testing.T, a *App, _ tea.Cmd) {
@@ -378,6 +394,7 @@ func TestWorkspaceFinderModeKeys(t *testing.T) {
 			opts: workspaceFinderOpts(),
 			setup: func(t *testing.T, a *App) {
 				openWorkspaceFinder(t, a)
+				_ = dispatchModeKey(a, keyPress('/'))
 				_ = dispatchModeKey(a, keyPress('b'))
 				if got := modalRows(&a.workspaceFinder); got != 1 {
 					t.Fatalf("precondition: rows = %d, want 1", got)

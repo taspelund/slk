@@ -201,7 +201,7 @@ func dialogGoldens() []dialogGolden {
 			open: func(t *testing.T, a *App) {
 				a.workspaceFinder.SetItems([]workspacefinder.Item{{ID: "T1", Name: "Acme", Initials: "A"}})
 				a.workspaceFinder.Open()
-				typeKeys(a.workspaceFinder.HandleKey, "zz")
+				typeKeys(a.workspaceFinder.HandleKey, "/zz")
 				a.SetMode(ModeWorkspaceFinder)
 			},
 		},

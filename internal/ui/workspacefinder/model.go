@@ -36,6 +36,9 @@ type Model struct {
 	query    string
 	selected int // index into filtered
 	visible  bool
+	// searching is true while typing in the / filter input; otherwise
+	// j/k move the highlight.
+	searching bool
 }
 
 var _ interface {
@@ -100,6 +103,7 @@ func (m *Model) ClickRow(termWidth, termHeight, localY int) bool {
 // Open shows the overlay and resets state.
 func (m *Model) Open() {
 	m.visible = true
+	m.searching = false
 	m.query = ""
 	m.selected = 0
 	m.filter()
@@ -117,6 +121,11 @@ func (m Model) IsVisible() bool {
 
 // HandleKey processes a key event and returns a WorkspaceResult if the user
 // selected a workspace, or nil otherwise.
+//
+// It opens navigating: j/k and the arrows move the highlight, / starts the
+// filter, esc closes. While filtering, printable runes and backspace edit the
+// query, the arrows still move, and esc clears the filter and goes back to
+// navigating. Enter switches to the highlighted workspace in either state.
 func (m *Model) HandleKey(keyStr string) *WorkspaceResult {
 	switch keyStr {
 	case "enter":
@@ -130,22 +139,38 @@ func (m *Model) HandleKey(keyStr string) *WorkspaceResult {
 		return nil
 
 	case "esc":
+		if m.searching {
+			m.searching = false
+			m.query = ""
+			m.selected = 0
+			m.filter()
+			return nil
+		}
 		m.Close()
 		return nil
 
 	case "down", "ctrl+n":
-		if m.selected < len(m.filtered)-1 {
-			m.selected++
-		}
+		m.move(1)
 		return nil
 
 	case "up", "ctrl+p":
-		if m.selected > 0 {
-			m.selected--
+		m.move(-1)
+		return nil
+	}
+
+	if !m.searching {
+		switch keyStr {
+		case "j":
+			m.move(1)
+		case "k":
+			m.move(-1)
+		case "/":
+			m.searching = true
 		}
 		return nil
+	}
 
-	case "backspace":
+	if keyStr == "backspace" {
 		if len(m.query) > 0 {
 			_, n := utf8.DecodeLastRuneInString(m.query)
 			m.query = m.query[:len(m.query)-n]
@@ -163,6 +188,13 @@ func (m *Model) HandleKey(keyStr string) *WorkspaceResult {
 	}
 
 	return nil
+}
+
+// move shifts the highlight by delta, clamped to the filtered list.
+func (m *Model) move(delta int) {
+	if next := m.selected + delta; next >= 0 && next < len(m.filtered) {
+		m.selected = next
+	}
 }
 
 // filter rebuilds the filtered list based on the current query.
@@ -238,13 +270,21 @@ func (m Model) renderBox(termWidth int) string {
 
 	f := chrome.Frame{
 		Title: "Switch Workspace",
-		Input: chrome.FilterInput(s, m.query, "Type to filter..."),
+		Input: m.inputLine(s),
 		Body:  list.Rows(s, m.selected, rows),
 	}
 	if m.query != "" {
 		f.Empty = "No matching workspaces"
 	}
 	return f.Render(s, overlayWidth)
+}
+
+// inputLine is the filter prompt while searching, otherwise a hint.
+func (m Model) inputLine(s chrome.Styles) string {
+	if m.searching {
+		return chrome.FilterInput(s, m.query, "Type to filter...")
+	}
+	return s.Footer.Render("j/k to move, / to search")
 }
 
 // workspacePrefix returns the display prefix for a workspace: a one-column

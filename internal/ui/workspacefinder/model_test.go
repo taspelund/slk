@@ -42,6 +42,7 @@ func TestFilterByQuery(t *testing.T) {
 	m := New()
 	m.SetItems(testItems())
 	m.Open()
+	m.HandleKey("/")
 
 	m.HandleKey("b")
 	m.HandleKey("e")
@@ -59,6 +60,7 @@ func TestFilterPrefixFirst(t *testing.T) {
 	m := New()
 	m.SetItems(testItems())
 	m.Open()
+	m.HandleKey("/")
 
 	// "ac" should match "Acme Corp" and "Acme Design" as prefix, not others
 	m.HandleKey("a")
@@ -144,6 +146,7 @@ func TestBackspace(t *testing.T) {
 	m := New()
 	m.SetItems(testItems())
 	m.Open()
+	m.HandleKey("/")
 
 	m.HandleKey("x")
 	m.HandleKey("y")
@@ -166,6 +169,7 @@ func TestNoMatchesNoResult(t *testing.T) {
 	m := New()
 	m.SetItems(testItems())
 	m.Open()
+	m.HandleKey("/")
 
 	m.HandleKey("z")
 	m.HandleKey("z")
@@ -182,6 +186,7 @@ func TestNoMatchesNoResult(t *testing.T) {
 func TestHandleKey_NonASCIIQuery(t *testing.T) {
 	m := New()
 	m.Open()
+	m.HandleKey("/")
 	m.HandleKey("中")
 	m.HandleKey("文")
 	if m.query != "中文" {
@@ -190,5 +195,60 @@ func TestHandleKey_NonASCIIQuery(t *testing.T) {
 	m.HandleKey("backspace")
 	if m.query != "中" {
 		t.Errorf("after backspace query = %q, want %q", m.query, "中")
+	}
+}
+
+// TestNavigateThenSearch: the finder opens navigating, where j/k move the
+// highlight and letters do not filter; / starts the filter, where j is
+// just a letter; esc leaves the filter (clearing it) before it closes.
+func TestNavigateThenSearch(t *testing.T) {
+	m := New()
+	m.SetItems(testItems())
+	m.Open()
+
+	m.HandleKey("j")
+	m.HandleKey("j")
+	m.HandleKey("k")
+	if m.selected != 1 || m.query != "" {
+		t.Fatalf("after j j k: selected = %d, query = %q; want 1, \"\"", m.selected, m.query)
+	}
+	m.HandleKey("c")
+	if m.query != "" || len(m.filtered) != 4 {
+		t.Fatalf("a letter filtered before /: query = %q, %d rows", m.query, len(m.filtered))
+	}
+
+	m.HandleKey("/")
+	for _, k := range []string{"c", "j", "k"} {
+		m.HandleKey(k)
+	}
+	if m.query != "cjk" {
+		t.Fatalf("query = %q, want %q: j/k must type while searching", m.query, "cjk")
+	}
+
+	m.HandleKey("esc")
+	if !m.IsVisible() || m.query != "" || len(m.filtered) != 4 {
+		t.Fatalf("first esc: visible = %v, query = %q, %d rows; want open, cleared, 4 rows", m.IsVisible(), m.query, len(m.filtered))
+	}
+	m.HandleKey("j")
+	if m.selected != 1 {
+		t.Fatalf("j after leaving search: selected = %d, want 1", m.selected)
+	}
+	m.HandleKey("esc")
+	if m.IsVisible() {
+		t.Fatal("second esc should close the finder")
+	}
+}
+
+// TestEnterWhileSearchingSelects: enter picks the highlighted match
+// straight from the filter, so "/beta<enter>" switches in one go.
+func TestEnterWhileSearchingSelects(t *testing.T) {
+	m := New()
+	m.SetItems(testItems())
+	m.Open()
+	for _, k := range []string{"/", "b", "e"} {
+		m.HandleKey(k)
+	}
+	if r := m.HandleKey("enter"); r == nil || r.ID != "T2" {
+		t.Fatalf("enter while searching = %+v, want T2", r)
 	}
 }
