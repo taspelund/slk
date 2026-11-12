@@ -92,6 +92,10 @@ func (m *Model) Select(idx int) {
 	}
 }
 
+// Items returns the rail's workspaces with their current HasUnread
+// flags. The slice is the rail's own; callers must not modify it.
+func (m *Model) Items() []WorkspaceItem { return m.items }
+
 func (m *Model) SetItems(items []WorkspaceItem) {
 	m.items = items
 	if m.selected >= len(items) {
