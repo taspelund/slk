@@ -19,6 +19,11 @@ type Model struct {
 	items    []WorkspaceItem
 	selected int
 	version  int64
+	// cursor is the keyboard highlight while the rail has focus (h from
+	// the sidebar); it starts on the selected workspace and Enter
+	// switches to it. focused draws it.
+	cursor  int
+	focused bool
 	// unreadReader returns the set of workspace IDs whose dot should
 	// be lit: those with at least one channel their own sidebar would
 	// show as unread (mute-filtered) or one unread subscribed thread
@@ -101,6 +106,9 @@ func (m *Model) SetItems(items []WorkspaceItem) {
 	if m.selected >= len(items) {
 		m.selected = 0
 	}
+	if m.cursor >= len(items) {
+		m.cursor = 0
+	}
 	m.dirty()
 }
 
@@ -126,6 +134,38 @@ func (m *Model) SetUnread(teamID string, hasUnread bool) {
 			return
 		}
 	}
+}
+
+// SetFocused sets whether the rail has keyboard focus, which draws the
+// cursor marker.
+func (m *Model) SetFocused(focused bool) {
+	if m.focused != focused {
+		m.focused = focused
+		m.dirty()
+	}
+}
+
+// ResetCursor puts the cursor on the selected workspace.
+func (m *Model) ResetCursor() { m.SetCursor(m.selected) }
+
+// SetCursor moves the cursor to idx, clamped to the items.
+func (m *Model) SetCursor(idx int) {
+	idx = max(0, min(idx, len(m.items)-1))
+	if idx >= 0 && m.cursor != idx {
+		m.cursor = idx
+		m.dirty()
+	}
+}
+
+// MoveCursor moves the cursor by delta, clamped to the items.
+func (m *Model) MoveCursor(delta int) { m.SetCursor(m.cursor + delta) }
+
+// CursorID returns the workspace under the cursor, or "" with no items.
+func (m *Model) CursorID() string {
+	if m.cursor < 0 || m.cursor >= len(m.items) {
+		return ""
+	}
+	return m.items[m.cursor].ID
 }
 
 // SetUnreadReader installs the callback used by RefreshUnreads.
@@ -180,6 +220,9 @@ func (m Model) View(height int) string {
 			initials = initials + styles.PresenceOnline.Render("●")
 		}
 		label := style.Render(initials)
+		if m.focused && i == m.cursor {
+			label = styles.PresenceOnline.Render("▌") + label
+		}
 		rows = append(rows, label)
 	}
 

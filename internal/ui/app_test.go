@@ -49,6 +49,64 @@ func TestAppFocusCycle(t *testing.T) {
 	}
 }
 
+// TestRailFocusKeys: h from the sidebar enters the workspace rail and stops
+// there, j/k move its cursor (clamped), Enter switches to the cursor's
+// workspace and returns to the sidebar, l leaves it, and shift+tab keeps
+// cycling the panes without it.
+func TestRailFocusKeys(t *testing.T) {
+	a := newTestApp(t, withWorkspaces(
+		workspace.WorkspaceItem{ID: "T1", Name: "alpha", Initials: "AL"},
+		workspace.WorkspaceItem{ID: "T2", Name: "beta", Initials: "BE"},
+		workspace.WorkspaceItem{ID: "T3", Name: "gamma", Initials: "GA"},
+	))
+	a.setWorkspaceSwitcherForTest(func(teamID string) tea.Msg { return switchedTeamMsg{teamID: teamID} })
+	railShowsCursor := func() bool {
+		return strings.Contains(stripANSI(a.renderRail(6, 20, styles.Version())), "\u258c")
+	}
+	press := func(k tea.KeyMsg) tea.Cmd { return dispatchModeKey(a, k) }
+
+	if a.focusedPanel != PanelSidebar {
+		t.Fatalf("precondition: focus = %v, want sidebar", a.focusedPanel)
+	}
+	press(keyPress('h'))
+	press(keyPress('h'))
+	if a.focusedPanel != PanelWorkspace || a.workspaceRail.CursorID() != "T1" {
+		t.Fatalf("after h h: focus = %v, cursor = %q; want rail on T1", a.focusedPanel, a.workspaceRail.CursorID())
+	}
+	if !railShowsCursor() {
+		t.Error("focused rail draws no cursor marker")
+	}
+	for _, r := range "jjjk" {
+		press(keyPress(r))
+	}
+	if got := a.workspaceRail.CursorID(); got != "T2" {
+		t.Fatalf("after j j j k: cursor = %q, want T2 (clamped at T3, then up)", got)
+	}
+	cmd := press(keyCode(tea.KeyEnter))
+	if a.focusedPanel != PanelSidebar {
+		t.Errorf("after enter: focus = %v, want sidebar", a.focusedPanel)
+	}
+	if cmd == nil {
+		t.Fatal("enter on another workspace returned no switch cmd")
+	}
+	if got, ok := cmd().(switchedTeamMsg); !ok || got.teamID != "T2" {
+		t.Errorf("enter switched to %#v, want T2", cmd())
+	}
+	if railShowsCursor() {
+		t.Error("rail still draws its cursor after focus left it")
+	}
+
+	press(keyPress('h'))
+	press(keyPress('l'))
+	if a.focusedPanel != PanelSidebar {
+		t.Errorf("after h l: focus = %v, want sidebar", a.focusedPanel)
+	}
+	press(keyMod(tea.KeyTab, tea.ModShift))
+	if a.focusedPanel == PanelWorkspace || a.focusedPanel == PanelSidebar {
+		t.Errorf("shift+tab from the sidebar: focus = %v, want it to wrap to a content pane", a.focusedPanel)
+	}
+}
+
 func TestAppToggleSidebar(t *testing.T) {
 	app := NewApp()
 
