@@ -61,7 +61,7 @@ func TestRailFocusKeys(t *testing.T) {
 	))
 	a.setWorkspaceSwitcherForTest(func(teamID string) tea.Msg { return switchedTeamMsg{teamID: teamID} })
 	railShowsCursor := func() bool {
-		return strings.Contains(stripANSI(a.renderRail(6, 20, styles.Version())), "\u258c")
+		return strings.Contains(stripANSI(a.renderRail(6, 20, styles.Version())), "\u25c2")
 	}
 	press := func(k tea.KeyMsg) tea.Cmd { return dispatchModeKey(a, k) }
 

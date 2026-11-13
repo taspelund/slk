@@ -215,15 +215,22 @@ func (m Model) View(height int) string {
 			style = styles.WorkspaceInactive
 		}
 
-		initials := item.Initials
+		// Every row is a one-column slot on each side of the tile: the
+		// unread dot on the left, the keyboard cursor on the right. An
+		// empty slot is a space, so rows are the same width with or
+		// without them and centering never shifts the initials.
+		// Slots carry the rail background themselves: one after the
+		// tile follows its reset and would otherwise show the
+		// terminal's.
+		slot := styles.PresenceOnline.Background(styles.RailBackground)
+		left, right := slot.Render(" "), slot.Render(" ")
 		if item.HasUnread && i != m.selected {
-			initials = initials + styles.PresenceOnline.Render("●")
+			left = slot.Render("●")
 		}
-		label := style.Render(initials)
 		if m.focused && i == m.cursor {
-			label = styles.PresenceOnline.Render("▌") + label
+			right = slot.Render("◂")
 		}
-		rows = append(rows, label)
+		rows = append(rows, left+style.Render(item.Initials)+right)
 	}
 
 	content := strings.Join(rows, "\n\n")
