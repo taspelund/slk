@@ -2080,9 +2080,8 @@ func (a *App) openQuitConfirm() {
 
 func (a *App) handleEnter() tea.Cmd {
 	if a.focusedPanel == PanelWorkspace {
-		// Switch to the workspace under the rail cursor and land in its
-		// channel list, as a click on the rail does.
-		a.focusedPanel = PanelSidebar
+		// Switch to the workspace under the rail cursor; focus stays in
+		// the rail so j/k and Enter can skim workspaces.
 		if a.compose.Uploading() || a.threadCompose.Uploading() {
 			return toastWithClear(a, "Upload in progress", 2*time.Second)
 		}
@@ -2092,11 +2091,13 @@ func (a *App) handleEnter() tea.Cmd {
 		return nil
 	}
 	if a.focusedPanel == PanelSidebar {
+		// Enter opens the row but keeps focus in the sidebar, so j/k
+		// and Enter can skim conversations; l moves to the messages.
 		if a.sidebar.IsThreadsSelected() {
-			return func() tea.Msg { return ThreadsViewActivatedMsg{} }
+			return func() tea.Msg { return ThreadsViewActivatedMsg{KeepFocus: true} }
 		}
 		if a.sidebar.IsActivitySelected() {
-			return func() tea.Msg { return ActivityViewActivatedMsg{} }
+			return func() tea.Msg { return ActivityViewActivatedMsg{KeepFocus: true} }
 		}
 		// A section header? Toggle its collapse state and stay in
 		// place. Section headers are also navigable via j/k so the
@@ -2108,7 +2109,7 @@ func (a *App) handleEnter() tea.Cmd {
 		item, ok := a.sidebar.SelectedItem()
 		if ok {
 			return func() tea.Msg {
-				return ChannelSelectedMsg{ID: item.ID, Name: item.Name, Type: item.Type}
+				return ChannelSelectedMsg{ID: item.ID, Name: item.Name, Type: item.Type, KeepFocus: true}
 			}
 		}
 	}

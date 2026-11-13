@@ -279,8 +279,9 @@ func reduceWorkspaceReady(a *App, m WorkspaceReadyMsg) tea.Cmd {
 			a.messagepane.SetLoading(true)
 			a.messagepane.SetMessages(nil)
 			batch = append(batch, spinnerTickCmd())
+			keep := a.focusedPanel == PanelWorkspace // switched from the rail: stay there
 			batch = append(batch, func() tea.Msg {
-				return ChannelSelectedMsg{ID: target.ID, Name: target.Name, Type: target.Type}
+				return ChannelSelectedMsg{ID: target.ID, Name: target.Name, Type: target.Type, KeepFocus: keep}
 			})
 		}
 		// Prime the sidebar Activity badge on connect (the feed is a
@@ -456,8 +457,9 @@ func reduceWorkspaceSwitched(a *App, m WorkspaceSwitchedMsg) tea.Cmd {
 			}
 		}
 		a.sidebar.SelectByID(target.ID)
+		keep := a.focusedPanel == PanelWorkspace // switched from the rail: stay there
 		batch = append(batch, func() tea.Msg {
-			return ChannelSelectedMsg{ID: target.ID, Name: target.Name, Type: target.Type}
+			return ChannelSelectedMsg{ID: target.ID, Name: target.Name, Type: target.Type, KeepFocus: keep}
 		})
 	} else {
 		a.sidebar.SelectThreadsRow()

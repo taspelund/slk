@@ -83,8 +83,8 @@ func TestRailFocusKeys(t *testing.T) {
 		t.Fatalf("after j j j k: cursor = %q, want T2 (clamped at T3, then up)", got)
 	}
 	cmd := press(keyCode(tea.KeyEnter))
-	if a.focusedPanel != PanelSidebar {
-		t.Errorf("after enter: focus = %v, want sidebar", a.focusedPanel)
+	if a.focusedPanel != PanelWorkspace || !railShowsCursor() {
+		t.Errorf("after enter: focus = %v, want it to stay in the rail with its cursor", a.focusedPanel)
 	}
 	if cmd == nil {
 		t.Fatal("enter on another workspace returned no switch cmd")
@@ -92,8 +92,20 @@ func TestRailFocusKeys(t *testing.T) {
 	if got, ok := cmd().(switchedTeamMsg); !ok || got.teamID != "T2" {
 		t.Errorf("enter switched to %#v, want T2", cmd())
 	}
-	if railShowsCursor() {
-		t.Error("rail still draws its cursor after focus left it")
+	// The switch restores the workspace's last channel; that must not
+	// pull focus out of the rail either.
+	_, swCmd := a.Update(WorkspaceSwitchedMsg{TeamID: "T2", Channels: []sidebar.ChannelItem{{ID: "C9", Name: "ops", Type: "channel"}}})
+	for _, msg := range drainSkippingTimers(swCmd) {
+		if sel, ok := msg.(ChannelSelectedMsg); ok {
+			a.Update(sel)
+		}
+	}
+	if a.activeChannelID != "C9" || a.focusedPanel != PanelWorkspace {
+		t.Errorf("after the switch: channel = %q, focus = %v; want C9 with focus still in the rail", a.activeChannelID, a.focusedPanel)
+	}
+	press(keyPress('l'))
+	if a.focusedPanel != PanelSidebar || railShowsCursor() {
+		t.Errorf("after l: focus = %v, cursor drawn = %v; want sidebar, no cursor", a.focusedPanel, railShowsCursor())
 	}
 
 	press(keyPress('h'))
@@ -104,6 +116,31 @@ func TestRailFocusKeys(t *testing.T) {
 	press(keyMod(tea.KeyTab, tea.ModShift))
 	if a.focusedPanel == PanelWorkspace || a.focusedPanel == PanelSidebar {
 		t.Errorf("shift+tab from the sidebar: focus = %v, want it to wrap to a content pane", a.focusedPanel)
+	}
+}
+
+// TestSidebarEnterKeepsFocus: Enter on a sidebar conversation or the
+// Threads row opens it but leaves focus in the sidebar, so j/k and Enter
+// can skim conversations.
+func TestSidebarEnterKeepsFocus(t *testing.T) {
+	a := newTestApp(t, withChannels(
+		sidebar.ChannelItem{ID: "C1", Name: "general", Type: "channel"},
+		sidebar.ChannelItem{ID: "C2", Name: "random", Type: "channel"},
+	))
+	enter := func() {
+		for _, msg := range drainSkippingTimers(dispatchModeKey(a, keyCode(tea.KeyEnter))) {
+			a.Update(msg)
+		}
+	}
+	a.sidebar.SelectByID("C2")
+	enter()
+	if a.activeChannelID != "C2" || a.focusedPanel != PanelSidebar {
+		t.Errorf("enter on #random: channel = %q, focus = %v; want C2 with focus in the sidebar", a.activeChannelID, a.focusedPanel)
+	}
+	a.sidebar.SelectThreadsRow()
+	enter()
+	if a.view != ViewThreads || a.focusedPanel != PanelSidebar {
+		t.Errorf("enter on Threads: view = %v, focus = %v; want the threads view with focus in the sidebar", a.view, a.focusedPanel)
 	}
 }
 

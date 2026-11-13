@@ -70,6 +70,11 @@ type (
 		// workspace's channel in another. Empty means "the active
 		// workspace", which is what every other sender means.
 		TeamID string
+		// KeepFocus leaves focus where it is instead of moving it to
+		// the messages pane: set by Enter in the sidebar (and the
+		// channel restore after a switch made from the workspace
+		// rail), so j/k can keep skimming the list.
+		KeepFocus bool
 	}
 	MessagesLoadedMsg struct {
 		ChannelID  string
@@ -191,7 +196,9 @@ type (
 	// ThreadsViewActivatedMsg is dispatched when the user picks the
 	// synthetic Threads sidebar row. The App switches the message pane to
 	// the threads-list view and (re)fetches the involved-threads list.
-	ThreadsViewActivatedMsg struct{}
+	ThreadsViewActivatedMsg struct {
+		KeepFocus bool // as on ChannelSelectedMsg
+	}
 	// ThreadsListLoadedMsg carries a freshly loaded list of involved-thread
 	// summaries for the named workspace. The App ignores it if it doesn't
 	// match the active team.
@@ -218,7 +225,9 @@ type (
 	// synthetic Activity sidebar row (or runs :activity). The App
 	// switches the message pane to the Activity view and fetches the
 	// feed. Mirrors ThreadsViewActivatedMsg.
-	ActivityViewActivatedMsg struct{}
+	ActivityViewActivatedMsg struct {
+		KeepFocus bool // as on ChannelSelectedMsg
+	}
 	// ActivityListLoadedMsg carries a freshly loaded page of Activity
 	// feed items for the named workspace. The App ignores it if it
 	// doesn't match the active team. Mirrors ThreadsListLoadedMsg.
