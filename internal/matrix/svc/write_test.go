@@ -215,13 +215,15 @@ func TestSendReplyThreadsItWithAFallbackToTheNewestReply(t *testing.T) {
 		t.Fatalf("m.relates_to = %v", rel)
 	}
 
-	// Broadcast: the reply, then the same text as a plain message.
+	// Broadcast: the reply marked as one, then the same text as a plain
+	// message marked as its copy.
 	msg = s.ports.threads.SendReply(ids.ChannelID(s.alias), ids.ThreadTS(rootTS), "all", true).(ui.ThreadReplySentMsg)
 	if !msg.Broadcast || msg.Message.Subtype != "thread_broadcast" {
 		t.Fatalf("broadcast reply = %#v", msg)
 	}
 	got := s.take()
-	if len(got) != 2 || relates(got[0])["rel_type"] != "m.thread" || got[1].body["m.relates_to"] != nil || got[1].body["body"] != "all" {
+	if len(got) != 2 || relates(got[0])["rel_type"] != "m.thread" || got[0].body[broadcastKey] != true ||
+		got[1].body["m.relates_to"] != nil || got[1].body["body"] != "all" || got[1].body[broadcastCopyKey] == nil {
 		t.Fatalf("broadcast requests = %+v", got)
 	}
 }

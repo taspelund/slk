@@ -623,3 +623,34 @@ func TestLookupAndAvatar(t *testing.T) {
 		t.Errorf("Switch to an unknown workspace = %#v", m)
 	}
 }
+
+// TestBroadcastReplyIsOneChannelRow: a reply sent with "also send to
+// channel" is a channel row (thread_broadcast, in its thread) and a thread
+// row; the plain room copy sent for other clients is neither.
+func TestBroadcastReplyIsOneChannelRow(t *testing.T) {
+	h := newHarness(t, nil)
+	root, rootTS := h.text(alice, "root")
+	reply := h.ev(bob, "m.room.message", map[string]any{
+		"msgtype": "m.text", "body": "shipping it",
+		"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root.ID},
+		broadcastKey:   true,
+	})
+	replyTS := h.live(reply)
+	h.live(h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "shipping it", broadcastCopyKey: reply.ID}))
+	h.text(alice, "after")
+
+	msg := h.b.fetch(h.alias, nil).(ui.MessagesLoadedMsg)
+	if got := texts(msg.Messages); !reflect.DeepEqual(got, []string{"root", "shipping it", "after"}) {
+		t.Fatalf("channel = %q", got)
+	}
+	b := msg.Messages[1]
+	if b.TS != replyTS || b.Subtype != "thread_broadcast" || b.ThreadTS != rootTS {
+		t.Errorf("broadcast row = TS %q subtype %q thread %q, want %q thread_broadcast %q", b.TS, b.Subtype, b.ThreadTS, replyTS, rootTS)
+	}
+	if msg.Messages[0].ReplyCount != 1 {
+		t.Errorf("root reply count = %d, want 1", msg.Messages[0].ReplyCount)
+	}
+	if got := texts(h.b.threadCache(h.alias, rootTS)); !reflect.DeepEqual(got, []string{"root", "shipping it"}) {
+		t.Errorf("thread = %q", got)
+	}
+}

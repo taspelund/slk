@@ -50,8 +50,8 @@ import (
 //	                its read position stays; a thread: local only (Matrix
 //	                has no unread mark for a thread)
 //	SendReply       m.thread relation with the newest reply (or the root)
-//	                as reply fallback; broadcast also sends the text as a
-//	                plain room message (Matrix has no thread_broadcast)
+//	                as reply fallback; broadcast marks the reply and also
+//	                sends a marked plain room copy (see sendReply)
 //	thread Mark     m.read.private receipt for the thread (thread_id)
 //	MarkRead        m.read.private receipt for the main timeline (thread_id
 //	                "main") and m.fully_read; clears m.marked_unread
@@ -190,10 +190,20 @@ func (b *Backend) eventAtTS(ctx context.Context, room id.RoomID, ts string) (id.
 // sendMessage sends content to room, after loading the room's members
 // when it is encrypted, and returns the event and its TS.
 func (b *Backend) sendMessage(ctx context.Context, room id.RoomID, content *event.MessageEventContent) (id.EventID, string, error) {
+	return b.sendContent(ctx, room, content, nil)
+}
+
+// sendContent is sendMessage with extra top-level content keys (nil for
+// none).
+func (b *Backend) sendContent(ctx context.Context, room id.RoomID, content *event.MessageEventContent, extra map[string]any) (id.EventID, string, error) {
 	if err := b.ensureMembers(ctx, room); err != nil {
 		return "", "", err
 	}
-	resp, err := b.client.SendMessageEvent(ctx, room, event.EventMessage, content)
+	var payload any = content
+	if extra != nil {
+		payload = &event.Content{Parsed: content, Raw: extra}
+	}
+	resp, err := b.client.SendMessageEvent(ctx, room, event.EventMessage, payload)
 	if err != nil {
 		return "", "", err
 	}
@@ -242,10 +252,10 @@ func (b *Backend) send(alias, text string) core.Msg {
 
 // sendReply is ThreadService.SendReply. The reply's reply fallback (for
 // clients without threads) is the thread's newest stored reply, else the
-// root. A broadcast also sends the text to the room as a plain message:
-// the UI shows the reply in the room's feed too (Slack's thread_broadcast
-// is one message in both places), and the plain message's echo is shown
-// there only if it arrives after the UI's self-send window.
+// root. A broadcast reply is marked broadcastKey and also sent to the
+// room as a plain message marked broadcastCopyKey, for other clients; slk
+// shows the reply in the room's feed (items.go) and hides the copy, so it
+// is one message in both places, as Slack's thread_broadcast is.
 func (b *Backend) sendReply(alias, threadTS, text string, broadcast bool) core.Msg {
 	failed := func(err error) core.Msg {
 		return ui.ThreadReplySendFailedMsg{ChannelID: alias, ThreadTS: threadTS, Reason: err.Error(), Broadcast: broadcast}
@@ -272,12 +282,16 @@ func (b *Backend) sendReply(alias, threadTS, text string, broadcast bool) core.M
 	content := mxfmt.FromCompose(text, res)
 	plain := *content
 	content.RelatesTo = (&event.RelatesTo{}).SetThread(root, fallback)
-	_, ts, err := b.sendMessage(ctx, room, content)
+	var extra map[string]any
+	if broadcast {
+		extra = map[string]any{broadcastKey: true}
+	}
+	reply, ts, err := b.sendContent(ctx, room, content, extra)
 	if err != nil {
 		return failed(err)
 	}
 	if broadcast {
-		if _, _, err := b.sendMessage(ctx, room, &plain); err != nil {
+		if _, _, err := b.sendContent(ctx, room, &plain, map[string]any{broadcastCopyKey: reply}); err != nil {
 			debuglog.General("matrix reply broadcast in %s: %v", room, err)
 		}
 	}

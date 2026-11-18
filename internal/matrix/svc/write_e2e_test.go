@@ -19,6 +19,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/ids"
 	"github.com/gammons/slk/internal/matrix/e2e"
 	"github.com/gammons/slk/internal/matrix/ident"
@@ -274,10 +275,30 @@ func TestWriteAgainstHomeserver(t *testing.T) {
 			c := e.Content.AsMessage()
 			return e.Type == event.EventMessage && c.Body == "to all" && c.RelatesTo.GetThreadParent() == ev
 		})
+		if threaded.Content.Raw[broadcastKey] != true {
+			t.Errorf("broadcast reply content = %v", threaded.Content.Raw)
+		}
 		bob.WaitEvent(t, room, func(e *event.Event) bool {
 			c := e.Content.AsMessage()
-			return e.Type == event.EventMessage && c.Body == "to all" && e.ID != threaded.ID && c.RelatesTo == nil
+			return e.Type == event.EventMessage && c.Body == "to all" && e.ID != threaded.ID && c.RelatesTo == nil &&
+				e.Content.Raw[broadcastCopyKey] == string(threaded.ID)
 		})
+		// Alice's channel shows it once, as the thread_broadcast reply,
+		// once both echoes are stored.
+		e2e.Eventually(t, "both broadcast events stored", func() bool {
+			var n int
+			err := w.b.d.Store.DB.QueryRow(e2e.Ctx(t), "SELECT count(*) FROM slkmx_events WHERE room_id = $1 AND body = 'to all'", room).Scan(&n)
+			return err == nil && n == 2
+		})
+		var rows []core.MessageItem
+		for _, m := range w.b.fetch(alias, nil).(ui.MessagesLoadedMsg).Messages {
+			if m.Text == "to all" {
+				rows = append(rows, m)
+			}
+		}
+		if len(rows) != 1 || rows[0].Subtype != "thread_broadcast" || rows[0].ThreadTS != ts {
+			t.Errorf("channel rows of the broadcast = %+v", rows)
+		}
 
 		marked := w.p.threads.Mark(ids.ChannelID(alias), ids.ThreadTS(ts), ids.MessageTS(replyTS))()
 		if marked != (ui.ThreadMarkedLocalMsg{ChannelID: alias, ThreadTS: ts, TS: replyTS}) {
