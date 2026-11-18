@@ -27,25 +27,16 @@ import (
 )
 
 // Deps are what a Backend needs. Account is the account name given to
-// --matrix; it names the workspace in the rail.
+// --matrix; it names the workspace in the rail. TimestampFormat is the
+// Go time layout of a message's header time, [appearance]
+// timestamp_format ("" for its default, "3:04 PM").
 type Deps struct {
-	Account string
-	Session *session.Session
-	Store   *store.Store
-	IDs     *ident.Mapper
-	Rooms   *rooms.Model
-}
-
-// Backend is one Matrix account behind slk's UI. Its workspace ID (the
-// TeamID the UI keys state by) is "M" plus the account's user alias.
-type Backend struct {
-	d      Deps
-	teamID string
-}
-
-// New returns the backend for an account.
-func New(d Deps) *Backend {
-	panic("svc: New not implemented (lead, with WP-Read)")
+	Account         string
+	Session         *session.Session
+	Store           *store.Store
+	IDs             *ident.Mapper
+	Rooms           *rooms.Model
+	TimestampFormat string
 }
 
 // TeamID is the workspace ID the UI knows this account by.
