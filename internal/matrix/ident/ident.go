@@ -39,6 +39,11 @@ var ErrTSTaken = errors.New("ident: timestamp already used in room")
 // belongs to a different Matrix ID.
 var ErrAliasTaken = errors.New("ident: alias already used")
 
+// ErrAlreadyMapped is returned by Persistence.PutTS when the event already
+// has a different TS, and by Persistence.PutAlias when the Matrix ID
+// already has a different alias: a mapping never changes.
+var ErrAlreadyMapped = errors.New("ident: already mapped to another value")
+
 // Kind says what an alias names.
 type Kind int
 
@@ -57,8 +62,9 @@ type Persistence interface {
 	// RoomBounds returns the oldest and newest TS mapped in room.
 	RoomBounds(ctx context.Context, room id.RoomID) (oldest, newest string, ok bool, err error)
 	// PutTS records ev <-> ts in room. It returns ErrTSTaken if ts is
-	// mapped to a different event in room; mapping the same pair again is
-	// not an error.
+	// mapped to a different event in room, and ErrAlreadyMapped if ev
+	// already has a different TS; mapping the same pair again is not an
+	// error.
 	PutTS(ctx context.Context, room id.RoomID, ev id.EventID, ts string) error
 
 	// LookupAlias returns the alias of a Matrix ID.
@@ -66,8 +72,9 @@ type Persistence interface {
 	// LookupMatrixID returns the Matrix ID an alias names.
 	LookupMatrixID(ctx context.Context, alias string) (matrixID string, kind Kind, ok bool, err error)
 	// PutAlias records matrixID <-> alias. It returns ErrAliasTaken if
-	// alias names a different Matrix ID; recording the same pair again is
-	// not an error.
+	// alias names a different Matrix ID, and ErrAlreadyMapped if matrixID
+	// already has a different alias; recording the same pair again is not
+	// an error.
 	PutAlias(ctx context.Context, kind Kind, matrixID, alias string) error
 }
 

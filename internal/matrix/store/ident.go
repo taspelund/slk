@@ -67,7 +67,7 @@ func (s *Store) PutTS(ctx context.Context, room id.RoomID, ev id.EventID, ts str
 	case cur == ts:
 		return nil
 	default:
-		return fmt.Errorf("store: event %s in %s already has TS %s, not %s", ev, room, cur, ts)
+		return fmt.Errorf("store: event %s in %s already has TS %s, not %s: %w", ev, room, cur, ts, ident.ErrAlreadyMapped)
 	}
 }
 
@@ -140,7 +140,7 @@ func (s *Store) PutAlias(ctx context.Context, kind ident.Kind, matrixID, alias s
 	case cur == alias:
 		return nil
 	default:
-		return fmt.Errorf("store: %s %s already has alias %s, not %s", k, matrixID, cur, alias)
+		return fmt.Errorf("store: %s %s already has alias %s, not %s: %w", k, matrixID, cur, alias, ident.ErrAlreadyMapped)
 	}
 }
 

@@ -124,7 +124,7 @@ func TestTSPersistence(t *testing.T) {
 	if err := s.PutTS(ctx, room, "$z", "0000000001.000000"); !errors.Is(err, ident.ErrTSTaken) {
 		t.Fatalf("other event at a taken TS: err = %v, want ErrTSTaken", err)
 	}
-	if err := s.PutTS(ctx, room, "$a", "0000000009.000000"); err == nil || errors.Is(err, ident.ErrTSTaken) {
+	if err := s.PutTS(ctx, room, "$a", "0000000009.000000"); !errors.Is(err, ident.ErrAlreadyMapped) {
 		t.Fatalf("moving an event to another TS: err = %v, want a non-ErrTSTaken error", err)
 	}
 	// TS uniqueness is per room.
@@ -170,7 +170,7 @@ func TestAliasPersistence(t *testing.T) {
 	if err := s.PutAlias(ctx, ident.KindRoom, "@a:x", "UAAAAAAAAAA"); !errors.Is(err, ident.ErrAliasTaken) {
 		t.Fatalf("alias taken by another kind: err = %v, want ErrAliasTaken", err)
 	}
-	if err := s.PutAlias(ctx, ident.KindUser, "@a:x", "UBBBBBBBBBB"); err == nil || errors.Is(err, ident.ErrAliasTaken) {
+	if err := s.PutAlias(ctx, ident.KindUser, "@a:x", "UBBBBBBBBBB"); !errors.Is(err, ident.ErrAlreadyMapped) {
 		t.Fatalf("second alias for a user: err = %v, want a non-ErrAliasTaken error", err)
 	}
 

@@ -184,7 +184,7 @@ func New(ctx context.Context, creds Credentials, st *store.Store, log zerolog.Lo
 		crypto: helper,
 		log:    log.With().Str("component", "session").Logger(),
 		events: make(chan Event),
-		tokens: helper.CryptoStore,
+		tokens: storeTokens{st: st, user: creds.UserID},
 		keys:   newPendingKeys(),
 	}
 	helper.Machine.SessionReceived = func(_ context.Context, _ id.RoomID, session id.SessionID, _ uint32) {

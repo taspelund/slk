@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go.mau.fi/util/dbutil"
 	"golang.org/x/term"
 	"maunium.net/go/mautrix"
 	_ "modernc.org/sqlite"
@@ -89,11 +87,11 @@ func runMatrixLogin(account string) error {
 		fmt.Println("Skipped. Without verification, encrypted messages from before this login stay unreadable.")
 		return nil
 	}
-	st, err := openMatrixStore(filepath.Join(dir, "matrix.db"))
+	st, err := store.Open(ctx, filepath.Join(dir, "matrix.db"))
 	if err != nil {
 		return err
 	}
-	defer st.DB.Close()
+	defer st.Close()
 	s, err := session.New(ctx, creds, st, session.DebugLogger())
 	if err != nil {
 		return err
@@ -108,24 +106,6 @@ func runMatrixLogin(account string) error {
 		fmt.Println("Device verified; room keys restored from the key backup.")
 	}
 	return nil
-}
-
-// openMatrixStore opens the account database the way store.Open will.
-// TODO(WP-Store): replace with store.Open once it is implemented.
-func openMatrixStore(path string) (*store.Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_txlock=immediate")
-	if err != nil {
-		return nil, err
-	}
-	db, err := dbutil.NewWithDB(raw, "sqlite3")
-	if err != nil {
-		raw.Close()
-		return nil, err
-	}
-	return &store.Store{DB: db}, nil
 }
 
 // resolveHomeserver turns what the user typed into a client-server API

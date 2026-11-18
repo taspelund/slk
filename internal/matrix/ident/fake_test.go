@@ -8,9 +8,9 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-// memPersistence is an in-memory Persistence for tests. Beyond the
-// interface's contract it refuses to map one event to a second TS, or one
-// Matrix ID to a second alias, so a Mapper that tries either fails loudly.
+// memPersistence is an in-memory Persistence for tests. As the contract
+// says, it refuses to map one event to a second TS, or one Matrix ID to a
+// second alias (ErrAlreadyMapped), so a Mapper that tries either fails.
 type memPersistence struct {
 	mu      sync.Mutex
 	ts      map[id.RoomID]map[id.EventID]string
@@ -88,7 +88,7 @@ func (p *memPersistence) PutTS(_ context.Context, room id.RoomID, ev id.EventID,
 		return nil
 	}
 	if old, ok := p.ts[room][ev]; ok {
-		return fmt.Errorf("memPersistence: %s already mapped to %s, not %s", ev, old, ts)
+		return fmt.Errorf("memPersistence: %s already mapped to %s, not %s: %w", ev, old, ts, ErrAlreadyMapped)
 	}
 	p.putLocked(room, ev, ts)
 	return nil
@@ -146,7 +146,7 @@ func (p *memPersistence) PutAlias(_ context.Context, kind Kind, matrixID, alias 
 		return nil
 	}
 	if old, ok := p.aliases[key]; ok {
-		return fmt.Errorf("memPersistence: %s already has alias %s, not %s", matrixID, old, alias)
+		return fmt.Errorf("memPersistence: %s already has alias %s, not %s: %w", matrixID, old, alias, ErrAlreadyMapped)
 	}
 	p.aliases[key] = alias
 	p.owners[alias] = key

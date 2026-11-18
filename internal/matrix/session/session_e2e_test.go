@@ -124,7 +124,12 @@ func hasID(evtID id.EventID) func(*event.Event) bool {
 
 func openStore(t *testing.T, path string) *store.Store {
 	t.Helper()
-	return &store.Store{DB: e2e.OpenDB(t, path)}
+	st, err := store.Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
 }
 
 // login logs a new slk device in for user, saves its credentials in a

@@ -14,6 +14,8 @@ import (
 	"maunium.net/go/mautrix/crypto/olm"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	"github.com/gammons/slk/internal/matrix/store"
 )
 
 // The sync loop is a loop around Client.FullSyncRequest rather than
@@ -40,13 +42,24 @@ const (
 	maxPending = 10000
 )
 
-// tokenStore is where Run keeps the sync token (next_batch). It is the
-// mautrix crypto store's crypto_account.sync_token column for now, which
-// mautrix's own sync loop uses too; when WP-Store's sync-token table lands
-// this can point there instead.
+// tokenStore is where Run keeps the sync token (next_batch).
 type tokenStore interface {
 	GetNextBatch(ctx context.Context) (string, error)
 	PutNextBatch(ctx context.Context, token string) error
+}
+
+// storeTokens keeps the sync token in the account database's sync state.
+type storeTokens struct {
+	st   *store.Store
+	user id.UserID
+}
+
+func (t storeTokens) GetNextBatch(ctx context.Context) (string, error) {
+	return t.st.LoadNextBatch(ctx, t.user)
+}
+
+func (t storeTokens) PutNextBatch(ctx context.Context, token string) error {
+	return t.st.SaveNextBatch(ctx, t.user, token)
 }
 
 // syncFilter is the inline filter every sync sends: members are lazy-loaded
