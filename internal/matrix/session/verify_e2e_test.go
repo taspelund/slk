@@ -172,8 +172,8 @@ func TestPeerRequestsVerification(t *testing.T) {
 		t.Errorf("done for device %s, want %s", u.Device, f.peer.Client.DeviceID)
 	}
 	sec := f.log.next(t, VerificationSecrets)
-	if sec.Err != nil || !sec.Restored {
-		t.Fatalf("secrets: restored=%v err=%v", sec.Restored, sec.Err)
+	if sec.Err != nil || !sec.Restored || !sec.CrossSigning {
+		t.Fatalf("secrets: cross-signing=%v restored=%v err=%v", sec.CrossSigning, sec.Restored, sec.Err)
 	}
 
 	if !f.crossSigned(t) {
@@ -239,8 +239,8 @@ func TestSessionRequestsVerification(t *testing.T) {
 	f.compareAndConfirm(t, txn)
 	f.peer.WaitVerify(t, e2e.VerifyDone, req.Txn)
 	f.log.next(t, VerificationDone)
-	if sec := f.log.next(t, VerificationSecrets); sec.Err != nil || !sec.Restored {
-		t.Fatalf("secrets: restored=%v err=%v", sec.Restored, sec.Err)
+	if sec := f.log.next(t, VerificationSecrets); sec.Err != nil || !sec.Restored || !sec.CrossSigning {
+		t.Fatalf("secrets: cross-signing=%v restored=%v err=%v", sec.CrossSigning, sec.Restored, sec.Err)
 	}
 	if !f.crossSigned(t) {
 		t.Error("slk's device is not signed by the account's self-signing key")
@@ -310,8 +310,8 @@ func TestBothStartSAS(t *testing.T) {
 	f.peer.StartSAS(t, req.Txn)
 	f.compareAndConfirm(t, txn)
 	f.peer.WaitVerify(t, e2e.VerifyDone, req.Txn)
-	if sec := f.log.next(t, VerificationSecrets); sec.Err != nil || !sec.Restored {
-		t.Fatalf("secrets: restored=%v err=%v", sec.Restored, sec.Err)
+	if sec := f.log.next(t, VerificationSecrets); sec.Err != nil || !sec.Restored || !sec.CrossSigning {
+		t.Fatalf("secrets: cross-signing=%v restored=%v err=%v", sec.CrossSigning, sec.Restored, sec.Err)
 	}
 	if !f.crossSigned(t) {
 		t.Error("slk's device is not signed by the account's self-signing key")

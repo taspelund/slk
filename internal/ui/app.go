@@ -529,6 +529,8 @@ type App struct {
 	// "press b" toast, so it appears once per message.
 	actionQueue   []actionPromptRef
 	promptToasted map[string]bool
+	// verify is device verification's dialogs and port (verify.go).
+	verify verifyState
 	// previewRemovals holds the link-preview removals in flight, by
 	// channel and ts (see remove_preview.go). Written on the Update
 	// goroutine only. Each removal's seq comes from previewRemovalSeq,
@@ -1205,6 +1207,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reduceSend,
 		reduceRemovePreview,
 		reduceActionPrompt,
+		reduceVerify,
 		reduceSlashCommand,
 		reduceChannels,
 		reduceLinks,

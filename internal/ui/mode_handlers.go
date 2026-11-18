@@ -101,7 +101,7 @@ func dispatchModeKey(a *App, msg tea.KeyMsg) tea.Cmd {
 		h = handleNormalMode
 	}
 	cmd := h(a, msg)
-	if wasModal && !a.mode.IsModalOverlay() && len(a.actionQueue) > 0 {
+	if wasModal && !a.mode.IsModalOverlay() && (len(a.actionQueue) > 0 || len(a.verify.queue) > 0) {
 		recheck := func() tea.Msg { return actionPromptRecheckMsg{} }
 		if cmd == nil {
 			return recheck

@@ -79,6 +79,8 @@ type Backend struct {
 	write   *writeState
 	files   *filesState
 	profile *profileState
+	// verifyOut orders verification messages to the UI (verify.go).
+	verifyOut verifyOut
 }
 
 // New returns the backend for an account.

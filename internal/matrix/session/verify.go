@@ -59,9 +59,11 @@ const (
 	// VerificationDone: both sides confirmed. The devices trust each
 	// other; this one now asks the other for the account's secrets.
 	VerificationDone
-	// VerificationSecrets: the secrets step ended. Restored says the key
-	// backup's key arrived and history was restored with it; Err is what
-	// fell short (nil when everything arrived).
+	// VerificationSecrets: the secrets step ended. CrossSigning says the
+	// cross-signing keys arrived, Restored that the key backup's key
+	// arrived and history was restored with it; Err is what fell short
+	// (nil when everything arrived; ErrNoKeyBackup when the account has
+	// no backup).
 	VerificationSecrets
 	// VerificationCancelled: either side cancelled, or it timed out
 	// (TimedOut). Reason is the cancel's reason, ByUs whether this device
@@ -94,10 +96,11 @@ type VerificationUpdate struct {
 	Reason   string
 	TimedOut bool
 	ByUs     bool
-	// Restored and Err are the secrets step's outcome
+	// CrossSigning, Restored and Err are the secrets step's outcome
 	// (VerificationSecrets).
-	Restored bool
-	Err      error
+	CrossSigning bool
+	Restored     bool
+	Err          error
 }
 
 // ErrNoOtherDevices is RequestVerification's error when the account has no
@@ -338,19 +341,20 @@ func (c verifyCallbacks) VerificationDone(ctx context.Context, txn id.Verificati
 	s.verify.forget(txn)
 	// Off the sync goroutine: the secrets arrive through /sync.
 	go func() {
-		restored, err := s.receiveSecrets(ctx)
+		xs, restored, err := s.receiveSecrets(ctx)
 		if err != nil {
 			s.log.Warn().Err(err).Msg("Verified, but not every secret arrived")
 		}
-		s.report(ctx, VerificationUpdate{ID: string(txn), Step: VerificationSecrets, Device: device, Restored: restored, Err: err})
+		s.report(ctx, VerificationUpdate{ID: string(txn), Step: VerificationSecrets, Device: device, CrossSigning: xs, Restored: restored, Err: err})
 	}()
 }
 
 // receiveSecrets asks the account's verified devices for its cross-signing
 // keys and its key backup key, and uses what arrives as
-// VerifyWithRecoveryKey uses the same keys from secret storage. restored
-// says the backup key arrived and history was restored with it.
-func (s *Session) receiveSecrets(ctx context.Context) (restored bool, err error) {
+// VerifyWithRecoveryKey uses the same keys from secret storage.
+// crossSigning says the cross-signing keys arrived, restored that the
+// backup key arrived and history was restored with it.
+func (s *Session) receiveSecrets(ctx context.Context) (crossSigning, restored bool, err error) {
 	ctx = s.log.WithContext(ctx)
 	mach := s.crypto.Machine
 	// The other device's signature on this one, and its own, are on the
@@ -371,7 +375,7 @@ func (s *Session) receiveSecrets(ctx context.Context) (restored bool, err error)
 		backupErr = s.receiveBackupKey(ctx)
 	}()
 	wg.Wait()
-	return backupErr == nil, errors.Join(xsErr, backupErr)
+	return xsErr == nil, backupErr == nil, errors.Join(xsErr, backupErr)
 }
 
 // receiveCrossSigningKeys requests the three cross-signing private keys,
