@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"os/signal"
@@ -242,13 +243,16 @@ func runMatrix(account string) error {
 	// Inline images draw as half blocks, which work in every terminal
 	// and multiplexer. Kitty and sixel need main.go's terminal probes and
 	// frame output, which are not shared with this path yet.
+	pxW, pxH, _ := startupCellPixels(imgpkg.ProtoHalfBlock)
+	imgpkg.SetCellPixels(pxW, pxH)
 	imgCtx := func(send func(tea.Msg)) imgrender.ImageContext {
 		return imgrender.ImageContext{
-			Protocol: imgpkg.ProtoHalfBlock,
-			Fetcher:  b.ImageFetcher(),
-			MaxRows:  cfg.Appearance.MaxImageRows,
-			MaxCols:  cfg.Appearance.MaxImageCols,
-			SendMsg:  send,
+			Protocol:   imgpkg.ProtoHalfBlock,
+			Fetcher:    b.ImageFetcher(),
+			CellPixels: image.Pt(pxW, pxH),
+			MaxRows:    cfg.Appearance.MaxImageRows,
+			MaxCols:    cfg.Appearance.MaxImageCols,
+			SendMsg:    send,
 		}
 	}
 	app.SetImageProtocol(imgpkg.ProtoHalfBlock)
