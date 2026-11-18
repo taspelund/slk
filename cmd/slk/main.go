@@ -123,6 +123,22 @@ func main() {
 				os.Exit(1)
 			}
 			os.Exit(0)
+		case "--matrix-login", "--matrix":
+			// Hidden while the Matrix backend is being built
+			// (internal/matrix). Both run before the config pre-load.
+			if len(os.Args) < 3 {
+				fmt.Fprintf(os.Stderr, "Usage: slk %s <account>\n", os.Args[1])
+				os.Exit(2)
+			}
+			run := runMatrix
+			if os.Args[1] == "--matrix-login" {
+				run = runMatrixLogin
+			}
+			if err := run(os.Args[2]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "--demo":
 			// Hidden: recording mode for the README GIFs. Deliberately
 			// not in printHelp. Runs before the config pre-load below,
