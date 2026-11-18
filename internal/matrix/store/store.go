@@ -78,6 +78,7 @@ import (
 	"embed"
 	"fmt"
 	"net/url"
+	"os"
 
 	"go.mau.fi/util/dbutil"
 	_ "modernc.org/sqlite"
@@ -110,6 +111,16 @@ func dsn(path string) string {
 // Open opens (creating if needed) the database at path, with foreign keys
 // and WAL on, and migrates this backend's tables to the current version.
 func Open(ctx context.Context, path string) (*Store, error) {
+	// The file holds encryption keys: only the owner may read it.
+	// SQLite gives its -wal and -shm files the same mode.
+	if f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o600); err != nil {
+		return nil, fmt.Errorf("store: creating %s: %w", path, err)
+	} else if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("store: creating %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, fmt.Errorf("store: restricting %s: %w", path, err)
+	}
 	raw, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("store: opening %s: %w", path, err)

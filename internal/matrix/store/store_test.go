@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -521,4 +522,28 @@ func nextTS(newest string) string {
 	fmt.Sscanf(newest, "%d.%d", &sec, &us)
 	us++
 	return fmt.Sprintf("%010d.%06d", sec+us/1e6, us%1e6)
+}
+
+// TestOpenRestrictsTheFile: the database holds encryption keys, so Open
+// leaves it, new or existing, readable by its owner only.
+func TestOpenRestrictsTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "matrix.db")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	matches, _ := filepath.Glob(path + "*")
+	for _, f := range matches {
+		info, err := os.Stat(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("%s mode = %o, want 600", filepath.Base(f), mode)
+		}
+	}
 }
