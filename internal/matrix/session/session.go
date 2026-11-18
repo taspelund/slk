@@ -156,6 +156,11 @@ type Session struct {
 	// (SetSyncPresence); empty sends none, which the server takes as
 	// online.
 	presence atomic.Value // event.Presence
+	// backupKick has room for one request for a key backup upload pass
+	// (backup.go); backupSkipped is the last reason a pass uploaded
+	// nothing, so it is logged once. Only the upload loop touches it.
+	backupKick    chan struct{}
+	backupSkipped string
 }
 
 // SetSyncPresence sets the presence every later /sync request asserts.
@@ -197,9 +202,12 @@ func New(ctx context.Context, creds Credentials, st *store.Store, log zerolog.Lo
 		events: make(chan Event),
 		tokens: storeTokens{st: st, user: creds.UserID},
 		keys:   newPendingKeys(),
+
+		backupKick: make(chan struct{}, 1),
 	}
 	helper.Machine.SessionReceived = func(_ context.Context, _ id.RoomID, session id.SessionID, _ uint32) {
 		s.keys.received(session)
+		s.kickBackup()
 	}
 	return s, nil
 }
@@ -253,6 +261,11 @@ var ErrNoKeyBackup = errors.New("session: the account has no key backup")
 // the latest backup version. While Run is running, events it delivered
 // encrypted that the restored keys open are then delivered as
 // LateDecrypted.
+//
+// The device keeps the backup key (in its crypto store, encrypted with
+// the pickle key), which makes it trust the backup that key opens: from
+// then on, while Run runs, the session uploads the room keys it holds
+// that the backup lacks, including those of messages it sends.
 func (s *Session) VerifyWithRecoveryKey(ctx context.Context, key string) error {
 	mach := s.crypto.Machine
 	if err := mach.VerifyWithRecoveryKey(ctx, key); err != nil {
@@ -276,6 +289,12 @@ func (s *Session) VerifyWithRecoveryKey(ctx context.Context, key string) error {
 	if err != nil {
 		return fmt.Errorf("session: key backup key: %w", err)
 	}
+	if err := s.saveBackupKey(ctx, backupKey); err != nil {
+		return err
+	}
+	// The upload loop picks the key up on its next pass: after this
+	// restore, the keys the backup lacks go up.
+	defer s.kickBackup()
 	version, err := mach.DownloadAndStoreLatestKeyBackup(ctx, backupKey)
 	if errors.Is(err, mautrix.MNotFound) || (err == nil && version == "") {
 		return ErrNoKeyBackup

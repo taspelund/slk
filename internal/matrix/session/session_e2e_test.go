@@ -473,6 +473,76 @@ func TestRecoveryKeyRestoresHistory(t *testing.T) {
 	}
 }
 
+// TestSentMessageKeysBackedUp: a session verified with the recovery key
+// uploads the room key of a message it sends to the key backup, so a new
+// device of the same user that only restores from the backup, with no
+// other device online to share the key, decrypts the message.
+func TestSentMessageKeysBackedUp(t *testing.T) {
+	srv := e2e.Homeserver(t)
+	aliceID, password := e2e.RegisterUser(t, srv, "alice")
+	setup := e2e.LoginPeer(t, srv, aliceID, password)
+	recoveryKey := setup.SetupRecovery(t)
+	// The device that set the backup up is gone, so nothing but the
+	// backup can give the new device the key.
+	if _, err := setup.Client.Logout(e2e.Ctx(t)); err != nil {
+		t.Fatalf("log the setup device out: %v", err)
+	}
+	bob := e2e.NewPeer(t, srv, "bob")
+
+	creds, _ := login(t, srv, aliceID, password)
+	s := newSession(t, creds, openStore(t, filepath.Join(t.TempDir(), "matrix.db")))
+	r := start(t, s)
+	r.waitBatch(t, "the initial batch", func(b SyncBatch) bool { return b.Initial })
+	if err := s.VerifyWithRecoveryKey(e2e.Ctx(t), recoveryKey); err != nil {
+		t.Fatalf("VerifyWithRecoveryKey: %v", err)
+	}
+	room := joinedRoom(t, bob, s, true)
+	sent, err := s.Client().SendMessageEvent(e2e.Ctx(t), room, event.EventMessage, &event.MessageEventContent{
+		MsgType: event.MsgText,
+		Body:    "sent by slk",
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if evt := bob.WaitText(t, room, "sent by slk"); !evt.Mautrix.WasEncrypted {
+		t.Fatal("slk's message was not encrypted")
+	}
+	// The upload runs in the background; wait for the key to reach the
+	// server before the only device holding it goes away.
+	ctx := e2e.Ctx(t)
+	e2e.Eventually(t, "the message's room key in the key backup", func() bool {
+		version, err := s.Client().GetKeyBackupLatestVersion(ctx)
+		if err != nil {
+			return false
+		}
+		keys, err := s.Client().GetKeyBackupForRoom(ctx, version.Version, room)
+		return err == nil && len(keys.Sessions) > 0
+	})
+	if err := r.stop(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v", err)
+	}
+
+	creds2, _ := login(t, srv, aliceID, password)
+	s2 := newSession(t, creds2, openStore(t, filepath.Join(t.TempDir(), "matrix.db")))
+	r2 := start(t, s2)
+	b := r2.waitBatch(t, "slk's message on the new device", func(b SyncBatch) bool {
+		return timelineEvent(b.Resp, room, hasID(sent.EventID)) != nil
+	})
+	if evt := timelineEvent(b.Resp, room, hasID(sent.EventID)); evt.Type != event.EventEncrypted {
+		t.Fatalf("the new device decrypted the message without the backup: %s", evt.Type)
+	}
+	if err := s2.VerifyWithRecoveryKey(e2e.Ctx(t), recoveryKey); err != nil {
+		t.Fatalf("new device VerifyWithRecoveryKey: %v", err)
+	}
+	ld := r2.waitFor(t, "slk's message, decrypted from the backup", func(ev Event) bool {
+		ld, ok := ev.(LateDecrypted)
+		return ok && ld.Room == room && len(ld.Events) > 0
+	}).(LateDecrypted)
+	if ld.Events[0].ID != sent.EventID || ld.Events[0].Content.AsMessage().Body != "sent by slk" {
+		t.Errorf("LateDecrypted = %v", ld.Events)
+	}
+}
+
 // TestRevokedTokenIsFatal: a sync rejected with M_UNKNOWN_TOKEN ends Run
 // with a LoggedOutError, reported as Disconnected first.
 func TestRevokedTokenIsFatal(t *testing.T) {
