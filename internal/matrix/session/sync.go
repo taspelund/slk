@@ -155,6 +155,18 @@ func (s *Session) run(ctx context.Context) error {
 	s.keys.setRunning(true)
 	defer s.keys.setRunning(false)
 
+	// Key backup uploads run beside the sync loop and end with it.
+	backupCtx, stopBackup := context.WithCancel(ctx)
+	backupDone := make(chan struct{})
+	go func() {
+		defer close(backupDone)
+		s.backupLoop(backupCtx)
+	}()
+	defer func() {
+		stopBackup()
+		<-backupDone
+	}()
+
 	if !s.emit(ctx, Connection{State: Connecting}) {
 		return ctx.Err()
 	}
