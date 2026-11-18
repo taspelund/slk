@@ -27,6 +27,8 @@
 package svc
 
 import (
+	"errors"
+
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/matrix/ident"
 	"github.com/gammons/slk/internal/matrix/rooms"
@@ -38,12 +40,15 @@ import (
 // Deps are what a Backend needs. Account is the account name given to
 // --matrix; it names the workspace in the rail. Dir is the account's
 // directory (session.json, matrix.db), where WP-Media keeps its file
-// cache. TimestampFormat is the
+// cache. ReadOnly leaves out every port that changes the account (sends,
+// edits, reactions, read receipts, joins, presence, typing, uploads), for
+// trying an account without touching it. TimestampFormat is the
 // Go time layout of a message's header time, [appearance]
 // timestamp_format ("" for its default, "3:04 PM").
 type Deps struct {
 	Account         string
 	Dir             string
+	ReadOnly        bool
 	Session         *session.Session
 	Store           *store.Store
 	IDs             *ident.Mapper
@@ -71,14 +76,13 @@ type ports struct {
 	images    core.ImageFetcher
 }
 
+// errReadOnly is what a write a read-only backend refuses reports.
+var errReadOnly = errors.New("read-only: this session does not change the account")
+
 // Install wires the backend's ports into app, as internal/demo's Install
 // does.
 func (b *Backend) Install(app *ui.App) {
-	var p ports
-	b.fillRead(&p)
-	b.fillWrite(&p)
-	b.fillFiles(&p)
-	b.fillProfile(&p)
+	p := b.ports()
 	app.SetChannelService(core.NewChannelService(p.channels))
 	app.SetThreadService(core.NewThreadService(p.threads))
 	app.SetMessageService(core.NewMessageService(p.messages))
@@ -105,4 +109,25 @@ func (b *Backend) Install(app *ui.App) {
 	if p.images != nil {
 		app.SetImageFetcher(p.images)
 	}
+}
+
+// ports builds the backend's port implementations; ReadOnly leaves out
+// the ones that change the account.
+func (b *Backend) ports() ports {
+	var p ports
+	b.fillRead(&p)
+	if !b.d.ReadOnly {
+		b.fillWrite(&p)
+	}
+	b.fillFiles(&p)
+	b.fillProfile(&p)
+	if b.d.ReadOnly {
+		p.presence = nil
+		if p.files != nil {
+			p.files = core.NewFileService(func(string, string, string, []core.PendingAttachment) core.Cmd {
+				return func() core.Msg { return ui.UploadResultMsg{Err: errReadOnly} }
+			}, p.files.Download)
+		}
+	}
+	return p
 }

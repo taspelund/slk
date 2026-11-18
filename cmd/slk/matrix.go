@@ -41,6 +41,8 @@ import (
 //
 //	slk --matrix-login <account>   log in and save the device
 //	slk --matrix <account>         run the TUI against that account
+//	  --read-only                  ... without changing the account: no
+//	                               sends, receipts, presence or uploads
 //
 // Each account's credentials and database live in matrixAccountDir.
 
@@ -180,7 +182,7 @@ func promptSecret(in *bufio.Reader, prompt string) (string, error) {
 
 // runMatrix runs slk against account, wired the way runDemo wires
 // internal/demo.
-func runMatrix(account string) error {
+func runMatrix(account string, readOnly bool) error {
 	dir := matrixAccountDir(account)
 	creds, err := session.LoadCredentials(dir)
 	if err != nil {
@@ -216,6 +218,7 @@ func runMatrix(account string) error {
 	}
 	b := svc.New(svc.Deps{
 		Dir:             dir,
+		ReadOnly:        readOnly,
 		Account:         account,
 		Session:         sess,
 		Store:           st,

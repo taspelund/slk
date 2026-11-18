@@ -127,10 +127,11 @@ func main() {
 			// Hidden while the Matrix backend is being built
 			// (internal/matrix). Both run before the config pre-load.
 			if len(os.Args) < 3 {
-				fmt.Fprintf(os.Stderr, "Usage: slk %s <account>\n", os.Args[1])
+				fmt.Fprintf(os.Stderr, "Usage: slk %s <account> [--read-only]\n", os.Args[1])
 				os.Exit(2)
 			}
-			run := runMatrix
+			readOnly := len(os.Args) > 3 && os.Args[3] == "--read-only"
+			run := func(account string) error { return runMatrix(account, readOnly) }
 			if os.Args[1] == "--matrix-login" {
 				run = runMatrixLogin
 			}

@@ -3,10 +3,12 @@ package svc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,11 +17,13 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"github.com/gammons/slk/internal/ids"
 	"github.com/gammons/slk/internal/matrix/ident"
 	"github.com/gammons/slk/internal/matrix/mxfmt"
 	"github.com/gammons/slk/internal/matrix/rooms"
 	"github.com/gammons/slk/internal/matrix/session"
 	"github.com/gammons/slk/internal/matrix/store"
+	"github.com/gammons/slk/internal/ui"
 )
 
 const (
@@ -244,5 +248,38 @@ func TestTeamIDIsMPlusTheAccountsAlias(t *testing.T) {
 	want := "M" + h.res().UserAlias(self)
 	if h.b.TeamID() != want || len(want) != 12 {
 		t.Fatalf("TeamID = %q, want %q", h.b.TeamID(), want)
+	}
+}
+
+// TestReadOnlyChangesNothing: a read-only backend opens a room without
+// marking it read and has no port that changes the account.
+func TestReadOnlyChangesNothing(t *testing.T) {
+	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/messages") {
+			writeJSON(t, w, map[string]any{"start": "s0", "chunk": []any{}})
+			return
+		}
+		http.NotFound(w, r)
+	})
+	h.b.d.ReadOnly = true
+	h.b.d.Dir = t.TempDir()
+	h.apply(timeline(general, h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "hi"})))
+	p := h.b.ports()
+	msg, ok := p.channels.Fetch(ids.ChannelID(h.alias), "").(ui.MessagesLoadedMsg)
+	if !ok || len(msg.Messages) != 1 || msg.MarkedTS != "" {
+		t.Fatalf("Fetch = %#v", msg)
+	}
+	time.Sleep(100 * time.Millisecond) // a mark would run in a goroutine
+	for _, r := range h.reqs() {
+		if !strings.HasPrefix(r, "GET ") {
+			t.Errorf("read-only backend sent %s", r)
+		}
+	}
+	if p.channels.MarkRead != nil || p.messages.Send != nil || p.threads.SendReply != nil || p.reactions != nil || p.presence != nil {
+		t.Errorf("read-only backend has write ports: %+v", p)
+	}
+	res, ok := p.files.Upload(h.alias, "", "", nil)().(ui.UploadResultMsg)
+	if !ok || !errors.Is(res.Err, errReadOnly) {
+		t.Errorf("Upload = %#v, want errReadOnly", res)
 	}
 }
