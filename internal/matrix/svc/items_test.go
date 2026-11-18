@@ -8,6 +8,7 @@ import (
 	"maunium.net/go/mautrix/id"
 
 	"github.com/gammons/slk/internal/core"
+	"github.com/gammons/slk/internal/matrix/media"
 )
 
 // page returns the backend's newest page of general as items.
@@ -131,11 +132,14 @@ func TestItemsRenderEachKindOfMessage(t *testing.T) {
 	if it, want := get(replyTS), "> <@"+aliceAlias+">: hello &lt;world&gt;\nhi back"; it.Text != want {
 		t.Errorf("reply text = %q, want %q", it.Text, want)
 	}
-	if it := get(fileTS); it.Text != "report.pdf" {
-		t.Errorf("file text = %q", it.Text)
+	// A file shows as its Attachment, with the caption (if any) as text.
+	if it := get(fileTS); it.Text != "" || len(it.Attachments) != 1 || it.Attachments[0].Kind != "file" || it.Attachments[0].Name != "report.pdf" {
+		t.Errorf("file = %+v", it)
+	} else if want, _ := media.Attachment(general, file.ID, parseMessage(file.Content.VeryRaw)); !reflect.DeepEqual(it.Attachments[0], want) {
+		t.Errorf("file attachment = %+v, want %+v", it.Attachments[0], want)
 	}
-	if it := get(imageTS); it.Text != "look at this\ncat.png" {
-		t.Errorf("image text = %q", it.Text)
+	if it := get(imageTS); it.Text != "look at this" || len(it.Attachments) != 1 || it.Attachments[0].Kind != "image" || it.Attachments[0].Name != "cat.png" {
+		t.Errorf("image = %+v", it)
 	}
 	if it := get(rootTS); it.ThreadTS != rootTS || it.ReplyCount != 3 || !reflect.DeepEqual(it.ReplyUsers, []string{bobAlias, selfAlias}) {
 		t.Errorf("thread root = %+v", it)
@@ -191,5 +195,56 @@ func TestReplyToAMessageNotStoredSaysSo(t *testing.T) {
 	it, ok := byTS(h.page(), ts)
 	if !ok || it.Text != "> "+unknownReplyText+"\nagreed" {
 		t.Fatalf("reply = %+v", it)
+	}
+}
+
+func TestMediaItemsTakeTheirFileFromTheNewestEdit(t *testing.T) {
+	h := newHarness(t, nil)
+	orig := h.ev(alice, "m.room.message", map[string]any{
+		"msgtype": "m.image", "body": "a.png", "url": "mxc://x/a",
+		"info": map[string]any{"mimetype": "image/png", "w": 100, "h": 50, "size": 7},
+	})
+	ts := h.live(orig)
+	it, _ := byTS(h.page(), ts)
+	if len(it.Attachments) != 1 || it.Text != "" || it.Attachments[0].Size != 7 {
+		t.Fatalf("image = %+v", it)
+	}
+	if r, ok := media.ParseURL(it.Attachments[0].DownloadURL); !ok || r.Event != orig.ID || r.Room != general {
+		t.Errorf("DownloadURL = %q", it.Attachments[0].DownloadURL)
+	}
+
+	// An edit that replaces the file (and adds a caption): the item
+	// reads the edit's content, so its URLs name the edit.
+	edit := h.ev(alice, "m.room.message", map[string]any{
+		"msgtype": "m.image", "body": "* better", "filename": "b.png", "url": "mxc://x/b",
+		"m.new_content": map[string]any{"msgtype": "m.image", "body": "better", "filename": "b.png", "url": "mxc://x/b"},
+		"m.relates_to":  map[string]any{"rel_type": "m.replace", "event_id": orig.ID},
+	})
+	h.live(edit)
+	it, _ = byTS(h.page(), ts)
+	if !it.IsEdited || it.Text != "better" || len(it.Attachments) != 1 || it.Attachments[0].Name != "b.png" {
+		t.Fatalf("edited image = %+v", it)
+	}
+	if r, _ := media.ParseURL(it.Attachments[0].DownloadURL); r.Event != edit.ID {
+		t.Errorf("edited DownloadURL names %s, want the edit %s", r.Event, edit.ID)
+	}
+	c, err := h.b.mediaContent(context.Background(), general, edit.ID)
+	if err != nil || c.FileName != "b.png" || c.URL != "mxc://x/b" {
+		t.Errorf("mediaContent(edit) = %+v, %v", c, err)
+	}
+
+	// A reply quoting it still names the file.
+	reply := h.ev(bob, "m.room.message", map[string]any{
+		"msgtype": "m.text", "body": "nice",
+		"m.relates_to": map[string]any{"m.in_reply_to": map[string]any{"event_id": orig.ID}},
+	})
+	rts := h.live(reply)
+	if it, _ := byTS(h.page(), rts); it.Text != "> <@"+h.res().UserAlias(alice)+">: a.png\nnice" {
+		t.Errorf("reply = %q", it.Text)
+	}
+
+	h.redact(orig.ID)
+	if _, err := h.b.mediaContent(context.Background(), general, orig.ID); err == nil {
+		t.Error("mediaContent of a redacted message worked")
 	}
 }

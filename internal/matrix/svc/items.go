@@ -16,6 +16,7 @@ import (
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/emoji"
 	"github.com/gammons/slk/internal/export"
+	"github.com/gammons/slk/internal/matrix/media"
 	"github.com/gammons/slk/internal/matrix/mxfmt"
 	"github.com/gammons/slk/internal/matrix/store"
 )
@@ -32,8 +33,10 @@ import (
 //   - m.emote is Subtype "me_message" (slk italicises it). m.notice is an
 //     ordinary message: Matrix bots post notices where Slack bots post
 //     messages, and the UI has no notice style for chat messages.
-//   - Media (m.image, m.file, m.audio, m.video) show the caption, then the
-//     file name, as text; Attachments are WP-Media's.
+//   - Media (m.image, m.file, m.audio, m.video) show their caption as
+//     text ("" without one) and the file as their one Attachment
+//     (media.Attachment); without a file they show the caption, then
+//     the file name, as text.
 //   - A reply (m.in_reply_to, not a thread's fallback) starts with a
 //     quote of the first line of the message it answers:
 //     "> <@author>: line", or "> _a message not loaded_" when that
@@ -179,6 +182,14 @@ func (b *Backend) item(ctx context.Context, room id.RoomID, r store.Event, rel r
 			}
 		}
 		it.Text = messageText(content, res)
+		src := r.ID // the event whose content this is
+		if e, ok := rel.edits[r.ID]; ok && it.IsEdited {
+			src = e.ID
+		}
+		if att, ok := media.Attachment(room, src, content); ok {
+			it.Text = captionText(content, res)
+			it.Attachments = []core.Attachment{att}
+		}
 		if content.MsgType == event.MsgEmote {
 			it.Subtype = "me_message"
 		}
@@ -214,11 +225,11 @@ func parseMessage(raw json.RawMessage) *event.MessageEventContent {
 }
 
 // messageText is a message's slk text: mxfmt's, and for media the
-// caption, then the file name.
+// caption, then the file name. A row with a file shows only the caption
+// (captionText) above its Attachment; a reply's quote of it uses this.
 func messageText(c *event.MessageEventContent, res mxfmt.Resolver) string {
 	switch c.MsgType {
 	case event.MsgImage, event.MsgFile, event.MsgAudio, event.MsgVideo:
-		// TODO(WP-Media): Attachments for the file itself.
 		name := c.FileName
 		if name == "" {
 			return mxfmt.ToMrkdwn(c, res)
@@ -228,6 +239,15 @@ func messageText(c *event.MessageEventContent, res mxfmt.Resolver) string {
 			return file
 		}
 		return mxfmt.ToMrkdwn(c, res) + "\n" + file
+	}
+	return mxfmt.ToMrkdwn(c, res)
+}
+
+// captionText is a media message's caption as slk text, "" when it has
+// none (its body is the file name).
+func captionText(c *event.MessageEventContent, res mxfmt.Resolver) string {
+	if c.GetCaption() == "" {
+		return ""
 	}
 	return mxfmt.ToMrkdwn(c, res)
 }
