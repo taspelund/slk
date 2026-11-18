@@ -4,6 +4,7 @@ package svc
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -53,17 +54,15 @@ func TestProfileAndPresenceAgainstHomeserver(t *testing.T) {
 		t.Fatalf("Profile of a stranger = %+v, %v", got, err)
 	}
 
-	// Away and Active set alice's presence. Her device stops syncing
-	// first: the session's /sync sends no set_presence, which marks her
-	// online again on every sync (Synapse), so Away does not hold while
-	// it syncs until the session syncs with the presence chosen. Bob sees
-	// her presence from a room they share.
+	// Away and Active set alice's presence, and Away holds while her
+	// device keeps syncing: a /sync without set_presence would mark her
+	// online again (Synapse). Bob sees her presence from a room they
+	// share.
 	room := bob.CreateRoom(t, e2e.RoomOptions{Name: "presence", Invite: []id.UserID{aliceID}})
 	if _, err := b.client.JoinRoomByID(ctx, room); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	bob.WaitMember(t, room, aliceID, event.MembershipJoin)
-	s.stop()
 	presence := func() event.Presence {
 		resp, err := bob.Client.GetPresence(context.Background(), aliceID)
 		if err != nil {
@@ -73,6 +72,18 @@ func TestProfileAndPresenceAgainstHomeserver(t *testing.T) {
 	}
 	p.presence.SetStatus(core.PresenceSetAway, 0)
 	e2e.Eventually(t, "alice unavailable", func() bool { return presence() == event.PresenceUnavailable })
+	for i := range 3 {
+		body := fmt.Sprintf("while away %d", i)
+		bob.SendText(t, room, body)
+		e2e.Eventually(t, "alice syncs "+body, func() bool {
+			var n int
+			err := st.DB.QueryRow(ctx, "SELECT count(*) FROM slkmx_events WHERE body = $1", body).Scan(&n)
+			return err == nil && n == 1
+		})
+	}
+	if got := presence(); got != event.PresenceUnavailable {
+		t.Fatalf("presence after alice synced while away = %s, want unavailable", got)
+	}
 	p.presence.SetStatus(core.PresenceSetActive, 0)
 	e2e.Eventually(t, "alice online", func() bool { return presence() == event.PresenceOnline })
 	select {

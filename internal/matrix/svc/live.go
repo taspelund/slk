@@ -538,7 +538,12 @@ func (r *liveRun) notify(rid id.RoomID, room rooms.Room, ev id.EventID, it core.
 			names[a] = r.b.rooms.DisplayName(rid, u)
 		}
 	}
-	body := it.UserName + ": " + notify.StripSlackMarkup(it.Text, names)
+	text := notify.StripSlackMarkup(it.Text, names)
+	if text == "" && len(it.Attachments) > 0 {
+		// A file with no caption: name the file.
+		text = it.Attachments[0].Name
+	}
+	body := it.UserName + ": " + text
 	go func() {
 		if err := n.Notifier.Notify(title, body); err != nil {
 			debuglog.Notify("notification failed: %v", err)

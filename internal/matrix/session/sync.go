@@ -242,10 +242,12 @@ func (s *Session) syncOnce(ctx context.Context, since, filter string, poll bool)
 		// new would otherwise take the whole poll timeout.
 		timeout = 0
 	}
+	presence, _ := s.presence.Load().(event.Presence)
 	resp, err := s.client.FullSyncRequest(reqCtx, mautrix.ReqSync{
-		Timeout:  int(timeout / time.Millisecond),
-		Since:    since,
-		FilterID: filter,
+		Timeout:     int(timeout / time.Millisecond),
+		Since:       since,
+		FilterID:    filter,
+		SetPresence: presence,
 	})
 	cancel()
 	if <-woken && err != nil && ctx.Err() == nil {

@@ -94,9 +94,11 @@ func newProfileState() *profileState {
 }
 
 // SetUISend sets how the backend sends messages to the UI outside Run
-// (tea.Program.Send): presence failures and the toasts of SetStatus.
-// Until it is set they are dropped.
+// (tea.Program.Send): presence failures and the toasts of SetStatus, and
+// the member lists MembershipFetch loads. Until it is set they are
+// dropped.
 func (b *Backend) SetUISend(send func(tea.Msg)) {
+	b.write.setSend(send)
 	s := b.profile
 	s.mu.Lock()
 	s.send = send
@@ -254,6 +256,9 @@ func (b *Backend) putPresence() {
 	presence := event.PresenceOnline
 	if want == "away" {
 		presence = event.PresenceUnavailable
+	}
+	if b.d.Session != nil {
+		b.d.Session.SetSyncPresence(presence)
 	}
 	var err error
 	if b.client != nil {

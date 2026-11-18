@@ -18,7 +18,10 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/gammons/slk/internal/config"
+	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/debuglog"
+	"github.com/gammons/slk/internal/export"
+	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/matrix/ident"
 	"github.com/gammons/slk/internal/matrix/rooms"
 	"github.com/gammons/slk/internal/matrix/session"
@@ -26,6 +29,7 @@ import (
 	"github.com/gammons/slk/internal/matrix/svc"
 	"github.com/gammons/slk/internal/notify"
 	"github.com/gammons/slk/internal/ui"
+	"github.com/gammons/slk/internal/ui/imgrender"
 	"github.com/gammons/slk/internal/ui/messages"
 	"github.com/gammons/slk/internal/ui/styles"
 	"github.com/gammons/slk/internal/ui/workspace"
@@ -229,7 +233,30 @@ func runMatrix(account string) error {
 		Config:          cfg.Notifications,
 		ActiveChannelID: app.ActiveChannelID,
 	})
+	// Files open with the OS (downloads), as on Slack.
+	app.SetDesktopService(core.NewDesktopService(core.DesktopServiceFuncs{
+		Open:       launchOS,
+		Stat:       os.Stat,
+		SaveThread: export.SaveThread,
+	}))
+	// Inline images draw as half blocks, which work in every terminal
+	// and multiplexer. Kitty and sixel need main.go's terminal probes and
+	// frame output, which are not shared with this path yet.
+	imgCtx := func(send func(tea.Msg)) imgrender.ImageContext {
+		return imgrender.ImageContext{
+			Protocol: imgpkg.ProtoHalfBlock,
+			Fetcher:  b.ImageFetcher(),
+			MaxRows:  cfg.Appearance.MaxImageRows,
+			MaxCols:  cfg.Appearance.MaxImageCols,
+			SendMsg:  send,
+		}
+	}
+	app.SetImageProtocol(imgpkg.ProtoHalfBlock)
+	app.SetImageContext(imgCtx(nil))
 	p := tea.NewProgram(app)
+	app.SetImageContext(imgCtx(p.Send))
+	// Presence toasts and loaded member lists reach the UI outside Run.
+	b.SetUISend(p.Send)
 
 	// The session syncs and the backend applies what it syncs from the
 	// start, but the UI hears nothing until the workspace exists: Run

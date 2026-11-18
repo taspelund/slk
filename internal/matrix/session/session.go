@@ -152,6 +152,17 @@ type Session struct {
 	tokens tokenStore
 	keys   *pendingKeys
 	ran    atomic.Bool
+	// presence is what each /sync sets the account's presence to
+	// (SetSyncPresence); empty sends none, which the server takes as
+	// online.
+	presence atomic.Value // event.Presence
+}
+
+// SetSyncPresence sets the presence every later /sync request asserts.
+// The server sets an account syncing without one online again, so an
+// away status only stays while the sync loop sends it too.
+func (s *Session) SetSyncPresence(p event.Presence) {
+	s.presence.Store(p)
 }
 
 // New sets up the client and encryption for creds on st. It does not start

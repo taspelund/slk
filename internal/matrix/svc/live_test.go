@@ -463,6 +463,14 @@ func TestLiveNotifications(t *testing.T) {
 	if n := f.note("a DM"); n != "acct: Alice|Alice: ping" {
 		t.Fatalf("DM notification = %q", n)
 	}
+	// A picture with no caption names the file.
+	f.sync(timeline(liveDM, lmk(t, "m.room.message", "$img", alice, 3500, nil, map[string]any{
+		"msgtype": "m.image", "body": "cat.png", "url": "mxc://example.org/cat",
+		"info": map[string]any{"mimetype": "image/png", "w": 10, "h": 10},
+	})))
+	if n := f.note("a picture"); n != "acct: Alice|Alice: cat.png" {
+		t.Fatalf("picture notification = %q", n)
+	}
 	mention := lmk(t, "m.room.message", "$n2", bob, 4000, nil, map[string]any{
 		"msgtype": "m.text", "body": "Me: look", "format": "org.matrix.custom.html",
 		"formatted_body": `<a href="https://matrix.to/#/@me:example.org">Me</a>: look`,

@@ -60,10 +60,9 @@ import (
 //	                encrypted room (trusted_private_chat, is_direct) added to
 //	                m.direct; answers once /sync has brought the room
 //	MembershipFetch loads the room's full member list (/members) and tells
-//	                the UI through the live side's sender (setSend)
+//	                the UI through SetUISend's sender (setSend)
 //	reactions       shortcode -> glyph key (internal/emoji); removing
 //	                redacts the account's reaction with that key
-//	sendTyping      typing notification, for WP-Profile's PresenceService
 //
 // Encrypted rooms: the sync filter lazy-loads members, so mautrix's state
 // store, which the crypto machine shares a new Megolm session from, may
@@ -71,9 +70,6 @@ import (
 // the first encrypted send in a room.
 
 const (
-	// typingTimeout is how long one typing notification lasts on the
-	// server; the UI sends again while the user keeps typing.
-	typingTimeout = 6 * time.Second
 	// openWait is how often OpenConversation looks for the new room in
 	// the model while it waits for /sync to bring it.
 	openWait = 100 * time.Millisecond
@@ -111,8 +107,8 @@ func newWriteState() *writeState {
 	return &writeState{members: map[id.RoomID]bool{}, reactions: map[reactionRef]id.EventID{}}
 }
 
-// setSend sets how MembershipFetch tells the UI the members it loaded:
-// Run's send, which holds messages until the workspace is built.
+// setSend sets how MembershipFetch tells the UI the members it loaded
+// (SetUISend).
 func (w *writeState) setSend(send func(tea.Msg)) {
 	w.mu.Lock()
 	w.send = send
@@ -711,17 +707,4 @@ func (b *Backend) unreact(alias, ts, name string) error {
 		}
 	}
 	return nil
-}
-
-// sendTyping is PresenceService.SendTyping for WP-Profile's
-// PresenceService (core.NewPresenceService(setStatus, b.sendTyping)).
-func (b *Backend) sendTyping(alias string) {
-	ctx, cancel, room, err := b.writeCtx(alias)
-	if err != nil {
-		return
-	}
-	defer cancel()
-	if _, err := b.client.UserTyping(ctx, room, true, typingTimeout); err != nil {
-		debuglog.General("matrix typing in %s: %v", room, err)
-	}
 }
