@@ -9,10 +9,12 @@ import (
 	"github.com/gammons/slk/internal/ui/sidebar"
 )
 
-// TestWorkspaces: Home holds the DMs and the rooms in no space; each
-// top-level space holds the rooms under it at any depth, a sub-space's
-// rooms in the sub-space's section; a room in two top-level spaces is in
-// both, and spaces in a cycle with no top leave their rooms in Home.
+// TestWorkspaces: Home holds the DMs; rooms in no space are grouped by
+// server (the account's own first, a room ID without one falling back to
+// its canonical alias); each top-level space holds the rooms under it at
+// any depth, a sub-space's rooms in the sub-space's section; a room in two
+// top-level spaces is in both, and spaces in a cycle with no top leave
+// their rooms grouped by server.
 func TestWorkspaces(t *testing.T) {
 	f := newFixture(t)
 	resp := world(t)
@@ -42,6 +44,13 @@ func TestWorkspaces(t *testing.T) {
 		state(t, "m.space.child", "!looped:x", alice, map[string]any{"via": []string{"x"}}))
 	join(resp, "!looped:x").State.Events = append(join(resp, "!looped:x").State.Events,
 		state(t, "m.room.name", "", alice, map[string]any{"name": "looped"}))
+	// Rooms in no space on other servers: one by its ID, one (an ID
+	// without a server, as from room version 12) by its alias.
+	join(resp, "!aaa:other.org").State.Events = append(join(resp, "!aaa:other.org").State.Events,
+		state(t, "m.room.name", "", alice, map[string]any{"name": "elsewhere"}))
+	join(resp, "!v12room").State.Events = append(join(resp, "!v12room").State.Events,
+		state(t, "m.room.name", "", alice, map[string]any{"name": "aliased"}),
+		state(t, "m.room.canonical_alias", "", alice, map[string]any{"alias": "#aliased:alias.org"}))
 	f.apply(resp)
 
 	type row struct{ name, section string }
@@ -60,12 +69,15 @@ func TestWorkspaces(t *testing.T) {
 	}
 	plat := f.roomAlias("!platform:x")
 	want := map[string][]row{
-		"Direct Messages": {{"Alice", "dms"}, {"Bob, Carol", "dms"}, {"general", "rooms"}, {"looped", "rooms"}, {"secret", "rooms"}},
+		"Direct Messages": {{"Alice", "dms"}, {"Bob, Carol", "dms"}},
+		"x":               {{"general", "rooms"}, {"looped", "rooms"}, {"secret", "rooms"}},
+		"alias.org":       {{"aliased", "rooms"}},
+		"other.org":       {{"elsewhere", "rooms"}},
 		"Alpha":           {{"both", "rooms"}, {"tie", "rooms"}},
 		// eng: Platform's order "a" beats Engineering's "b".
 		"Engineering": {{"eng", plat}, {"plat", plat}, {"both", "rooms"}, {"tie", "rooms"}},
 	}
-	if !reflect.DeepEqual(order, []string{"Direct Messages", "Alpha", "Engineering"}) {
+	if !reflect.DeepEqual(order, []string{"Direct Messages", "x", "alias.org", "other.org", "Alpha", "Engineering"}) {
 		t.Errorf("workspaces = %q", order)
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -75,7 +87,7 @@ func TestWorkspaces(t *testing.T) {
 	if !reflect.DeepEqual(sections["Engineering"], wantEng) {
 		t.Errorf("Engineering sections = %+v", sections["Engineering"])
 	}
-	if ws := f.m.Workspaces(); ws[0].ID != "" || ws[2].ID != f.roomAlias("!space1:x") {
-		t.Errorf("IDs = %q, %q", ws[0].ID, ws[2].ID)
+	if ws := f.m.Workspaces(); ws[0].ID != "" || ws[1].ID != "@x" || ws[5].ID != f.roomAlias("!space1:x") {
+		t.Errorf("IDs = %q, %q, %q", ws[0].ID, ws[1].ID, ws[5].ID)
 	}
 }

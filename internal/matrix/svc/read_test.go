@@ -531,8 +531,11 @@ func TestListThreadsListsThreadsTheAccountIsIn(t *testing.T) {
 	thread(bob, theirs.ID, "c")
 	thread(self, joined.ID, "d")
 
-	msg := h.b.listThreads(h.b.TeamID()).(ui.ThreadsListLoadedMsg)
-	if msg.TeamID != h.b.TeamID() || !msg.SubscriptionsAvailable || len(msg.Summaries) != 2 {
+	if msg := h.b.listThreads(h.b.TeamID()).(ui.ThreadsListLoadedMsg); len(msg.Summaries) != 0 {
+		t.Errorf("Direct Messages lists general's threads: %+v", msg.Summaries)
+	}
+	msg := h.b.listThreads(harnessOrg).(ui.ThreadsListLoadedMsg)
+	if msg.TeamID != harnessOrg || !msg.SubscriptionsAvailable || len(msg.Summaries) != 2 {
 		t.Fatalf("ListFetch = %+v", msg)
 	}
 	res := h.res()
@@ -593,7 +596,7 @@ func TestUnreadStatesComeFromTheSnapshot(t *testing.T) {
 	if !reflect.DeepEqual(states, map[string]core.ReadState{h.alias: {LastReadTS: readTS, HasUnread: true, MentionCount: 2}}) {
 		t.Errorf("ChannelReadStates = %+v", states)
 	}
-	if got := h.b.unreadWorkspaces(); !reflect.DeepEqual(got, []string{h.b.TeamID()}) {
+	if got := h.b.unreadWorkspaces(); !reflect.DeepEqual(got, []string{harnessOrg}) {
 		t.Errorf("UnreadWorkspaces = %v", got)
 	}
 }
@@ -616,8 +619,8 @@ func TestLookupAndAvatar(t *testing.T) {
 	if av := p.avatars.Avatar("UNOBODY0000"); av != "" {
 		t.Errorf("Avatar of an unknown alias = %q", av)
 	}
-	if sw, ok := p.workspace.Switch(h.b.TeamID()).(ui.WorkspaceSwitchedMsg); !ok || sw.TeamName != "Direct Messages" || len(sw.Channels) != 1 || sw.Channels[0].ID != h.alias {
-		t.Errorf("Switch to Direct Messages = %#v", sw)
+	if sw, ok := p.workspace.Switch(harnessOrg).(ui.WorkspaceSwitchedMsg); !ok || sw.TeamName != "example.org" || len(sw.Channels) != 1 || sw.Channels[0].ID != h.alias {
+		t.Errorf("Switch to example.org = %#v", sw)
 	}
 	if m := p.workspace.Switch("MNOSUCH"); m != nil {
 		t.Errorf("Switch to an unknown workspace = %#v", m)

@@ -215,7 +215,7 @@ func TestSetStatusAwayAndActiveSetMatrixPresence(t *testing.T) {
 			done = true
 		}
 	}
-	if want := (ui.StatusChangeMsg{TeamID: h.b.TeamID(), Presence: "active"}); last != want {
+	if want := (ui.StatusChangeMsg{TeamID: harnessOrg, Presence: "active"}); last != want {
 		t.Errorf("last message = %#v, want %#v", last, want)
 	}
 }
@@ -227,11 +227,14 @@ func TestSetStatusFailureRestoresTheServersPresence(t *testing.T) {
 	p := profilePorts(h)
 	p.presence.SetStatus(core.PresenceSetAway, 0)
 	awaitOne(t, puts)
-	if m := awaitOne(t, msgs); m != (ui.StatusChangeMsg{TeamID: h.b.TeamID(), Presence: "active"}) {
-		t.Errorf("first message %#v", m)
+	// Every workspace is put back, then the toast.
+	for _, team := range []string{h.b.TeamID(), harnessOrg} {
+		if m := awaitOne(t, msgs); m != (ui.StatusChangeMsg{TeamID: team, Presence: "active"}) {
+			t.Errorf("message %#v, want %s put back", m, team)
+		}
 	}
 	if m, ok := awaitOne(t, msgs).(ui.ToastMsg); !ok || m.Text == "" {
-		t.Errorf("second message %#v", m)
+		t.Errorf("last message %#v", m)
 	}
 }
 
@@ -240,8 +243,12 @@ func TestSnoozeIsUndoneWithAToast(t *testing.T) {
 	msgs := profileUIMsgs(h)
 	p := profilePorts(h)
 	p.presence.SetStatus(core.PresenceSnooze, 30)
-	got := []tea.Msg{awaitOne(t, msgs), awaitOne(t, msgs)}
-	want := []tea.Msg{ui.StatusChangeMsg{TeamID: h.b.TeamID(), Presence: "active"}, ui.ToastMsg{Text: toastNoDND}}
+	got := []tea.Msg{awaitOne(t, msgs), awaitOne(t, msgs), awaitOne(t, msgs)}
+	want := []tea.Msg{
+		ui.StatusChangeMsg{TeamID: h.b.TeamID(), Presence: "active"},
+		ui.StatusChangeMsg{TeamID: harnessOrg, Presence: "active"},
+		ui.ToastMsg{Text: toastNoDND},
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("sent %#v, want %#v", got, want)
 	}

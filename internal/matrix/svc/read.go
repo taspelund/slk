@@ -134,6 +134,7 @@ func (b *Backend) fetch(alias string, markRead func(ids.ChannelID, ids.MessageTS
 		return ui.MessagesLoadedMsg{ChannelID: alias}
 	}
 	defer cancel()
+	b.opened(alias)
 	msgs, err := b.page(ctx, room, "")
 	if err != nil {
 		debuglog.Cache("matrix fetch: room=%s: %v", room, err)

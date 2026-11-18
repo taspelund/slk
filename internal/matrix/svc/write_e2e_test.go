@@ -418,6 +418,7 @@ func TestWriteAgainstHomeserver(t *testing.T) {
 		}
 		bob.Join(t, dm)
 		e2e.Eventually(t, "alice sees bob join", func() bool { return cli.StateStore.IsInRoom(ctx, dm, bob.UserID) })
+		w.b.fetch(got.ChannelID, nil) // the UI opens it
 		w.sendOnce(dm, got.ChannelID, "secret dm")
 		if e := bob.WaitText(t, dm, "secret dm"); !e.Mautrix.WasEncrypted {
 			t.Fatal("the DM message was not encrypted")

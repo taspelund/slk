@@ -123,6 +123,11 @@ func TestLiveAgainstHomeserver(t *testing.T) {
 		c, ok := msg.(ui.ConversationOpenedMsg)
 		return ok && c.Item.ID == alias && c.Item.Name == "live"
 	})
+	// The room is in the server's workspace, not the one on screen: open
+	// it, as the UI does.
+	if b.fetch(alias, nil) == nil {
+		t.Fatal("fetch")
+	}
 
 	m1 := bob.SendText(t, room, "hello alice")
 	added := wait("the message", func(msg tea.Msg) bool {

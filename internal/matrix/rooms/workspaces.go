@@ -1,7 +1,9 @@
 package rooms
 
 import (
+	"maps"
 	"slices"
+	"strings"
 
 	"maunium.net/go/mautrix/id"
 
@@ -16,14 +18,18 @@ const HomeName = "Direct Messages"
 
 // Workspace is one entry of the workspace rail and the sidebar it shows.
 //
-// The first is Home (ID ""): direct chats, in section "Direct Messages",
-// and joined rooms in no space, in "Rooms". Then each top-level space (a
-// joined space with no joined parent space), by name, then alias, with ID
-// its room alias: the rooms under it, at any depth, each in the section
-// of its nearest parent space below the top (a sub-space's name, sorted
-// by name) or, when that parent is the top itself, in "Rooms" after them.
-// A room under two top-level spaces is in both. Rooms whose only spaces
-// form a cycle with no top are in Home.
+// The first is Home (ID ""): the direct chats, in section "Direct
+// Messages". Then the joined rooms in no space, one workspace per server
+// (ID "@" plus the server name, named by it; the account's own server
+// first, then by name), in section "Rooms": a room's server is the one in
+// its ID, else in its canonical alias, else none ("Other rooms"). Then
+// each top-level space (a joined space with no joined parent space), by
+// name, then alias, with ID its room alias: the rooms under it, at any
+// depth, each in the section of its nearest parent space below the top
+// (a sub-space's name, sorted by name) or, when that parent is the top
+// itself, in "Rooms" after them. A room under two top-level spaces is in
+// both. Rooms whose only spaces form a cycle with no top count as in no
+// space.
 type Workspace struct {
 	ID       string
 	Name     string
@@ -85,6 +91,7 @@ func (m *Model) workspacesLocked() []Workspace {
 		section string
 	}
 	home := []entry{}
+	byServer := map[string][]entry{}
 	byTop := map[*room][]entry{}
 	var topList []*room
 	for _, r := range m.rooms {
@@ -105,7 +112,8 @@ func (m *Model) workspacesLocked() []Workspace {
 		}
 		ts := tops(r.row.ID, map[id.RoomID]bool{})
 		if len(ts) == 0 {
-			home = append(home, entry{r, sectionRooms})
+			srv := serverOf(r)
+			byServer[srv] = append(byServer[srv], entry{r, sectionRooms})
 			continue
 		}
 		ps := parents(r.row.ID)
@@ -165,8 +173,29 @@ func (m *Model) workspacesLocked() []Workspace {
 	out := []Workspace{{ID: "", Name: HomeName}}
 	build(&out[0], home, []sidebar.SectionMeta{
 		{ID: sectionDMs, Name: "Direct Messages", Type: "direct_messages"},
-		{ID: sectionRooms, Name: "Rooms", Type: "channels"},
 	})
+	own := m.self.Homeserver()
+	servers := slices.Collect(maps.Keys(byServer))
+	slices.SortFunc(servers, func(a, b string) int {
+		switch {
+		case a == b:
+			return 0
+		case a == own, b == "":
+			return -1
+		case b == own, a == "":
+			return 1
+		}
+		return cmpString(a, b)
+	})
+	for _, srv := range servers {
+		name := srv
+		if srv == "" {
+			name = "Other rooms"
+		}
+		ws := Workspace{ID: "@" + srv, Name: name}
+		build(&ws, byServer[srv], []sidebar.SectionMeta{{ID: sectionRooms, Name: "Rooms", Type: "channels"}})
+		out = append(out, ws)
+	}
 	for _, top := range topList {
 		entries := byTop[top]
 		subs := map[string]*room{}
@@ -195,4 +224,17 @@ func (m *Model) workspacesLocked() []Workspace {
 		out = append(out, ws)
 	}
 	return out
+}
+
+// serverOf is the server a room in no space is listed under: the one in
+// its ID, else in its canonical alias (room IDs from room version 12 on
+// name no server), else "".
+func serverOf(r *room) string {
+	if _, srv, ok := strings.Cut(string(r.row.ID), ":"); ok && srv != "" {
+		return srv
+	}
+	if _, srv, ok := strings.Cut(string(r.row.CanonicalAlias), ":"); ok {
+		return srv
+	}
+	return ""
 }

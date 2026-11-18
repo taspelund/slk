@@ -16,9 +16,10 @@
 //   - names: m.room.name, else the canonical alias, else names computed
 //     from the heroes (the spec's room-name algorithm), for DMs the other
 //     member's display name
-//   - workspaces (Workspaces): Direct Messages holds the DMs and the
-//     rooms in no space, then each top-level space is a workspace whose
-//     sub-spaces are sidebar sections. Snapshot's single sidebar
+//   - workspaces (Workspaces): Direct Messages holds the DMs, then the
+//     rooms in no space are one workspace per server (the account's own
+//     first), then each top-level space is a workspace whose sub-spaces
+//     are sidebar sections. Snapshot's single sidebar
 //     (Channels, Sections) puts a room in the section of its first parent
 //     space (by m.space.child "order", then by name), rooms in no space in
 //     "Rooms", DMs in "Direct Messages". Spaces themselves are not

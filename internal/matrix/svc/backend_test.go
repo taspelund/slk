@@ -87,6 +87,10 @@ func (r *recRooms) fills() []fillCall {
 // harness is a Backend over a temp store, a real room model in which
 // self, alice and bob are in the public room general, and, when the test
 // gives a handler, a client of an httptest homeserver.
+// harnessOrg is the workspace of the harness's general, a room in no space
+// on example.org.
+const harnessOrg = "M@example.org"
+
 type harness struct {
 	t     *testing.T
 	b     *Backend

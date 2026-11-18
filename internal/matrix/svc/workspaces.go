@@ -12,15 +12,18 @@ import (
 )
 
 // The account's rooms are several UI workspaces, one per rail entry
-// (rooms.Workspace): Direct Messages (DMs and rooms in no space), then one
-// per top-level space. Each has its own team ID: the backend's TeamID for
-// Direct Messages, "M" plus the space's room alias for a space.
+// (rooms.Workspace): Direct Messages (DMs only), then one per server for
+// rooms in no space, then one per top-level space. Each has its own team
+// ID: the backend's TeamID for Direct Messages, "M@" plus the server for
+// a server's, "M" plus the space's room alias for a space.
 //
 // The UI shows one at a time. As for Slack's inactive workspaces, a room
 // that is not in the active one sends no message, reaction or typing
 // events, only ReadStateChangedMsg for its workspaces so the rail's dot
-// follows; opening it later loads it from the store. A room in two spaces
-// is in both workspaces.
+// follows; opening it later loads it from the store. The exception is the
+// room the UI opened (fetch) since the last switch, such as a DM started
+// from a server's workspace: it is on screen wherever it belongs. A room
+// in two spaces is in both workspaces.
 
 // workspaces is the backend's workspace state (Backend.ws). Lookups read
 // the room model; list is the workspaces as last told to the UI
@@ -32,6 +35,10 @@ type workspaces struct {
 	// team ID, kept across rebuilds so the UI's reference stays live.
 	sections map[string]*sectionsProvider
 	active   string
+	// open is the room (by alias) the UI last fetched since the last
+	// switch: it can be outside the workspace on screen, as a DM opened
+	// from a server's workspace is, and its events still reach the UI.
+	open string
 }
 
 // teamOf is the team ID of workspace wsID ("" is Direct Messages).
@@ -141,9 +148,20 @@ func (b *Backend) activeTeam() string {
 	return b.ws.active
 }
 
-// inActive says whether a room (by alias) is in the workspace on screen.
+// inActive says whether a room (by alias) is on screen: in the workspace
+// on screen, or the conversation the UI opened there.
 func (b *Backend) inActive(alias string) bool {
-	return slices.Contains(b.teamsOf(alias), b.activeTeam())
+	b.ws.mu.Lock()
+	open := b.ws.open
+	b.ws.mu.Unlock()
+	return alias == open || slices.Contains(b.teamsOf(alias), b.activeTeam())
+}
+
+// opened records the conversation the UI has open (fetch).
+func (b *Backend) opened(alias string) {
+	b.ws.mu.Lock()
+	b.ws.open = alias
+	b.ws.mu.Unlock()
 }
 
 // knownTeam says whether team is one of the backend's workspaces.
@@ -160,7 +178,7 @@ func (b *Backend) switchTo(team string) core.Msg {
 		return nil
 	}
 	b.ws.mu.Lock()
-	b.ws.active = team
+	b.ws.active, b.ws.open = team, ""
 	b.ws.mu.Unlock()
 	snap := b.rooms.Snapshot()
 	theme, width := b.style(team)
