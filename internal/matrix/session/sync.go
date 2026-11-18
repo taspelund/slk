@@ -160,7 +160,7 @@ func (s *Session) run(ctx context.Context) error {
 	}
 	initial, connected, failures := true, false, 0
 	for {
-		resp, err := s.syncOnce(ctx, since, string(filter))
+		resp, err := s.syncOnce(ctx, since, string(filter), !initial)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -218,9 +218,10 @@ func (s *Session) run(ctx context.Context) error {
 	}
 }
 
-// syncOnce makes one /sync request. A wake-up (keys for pending events
-// arrived) cancels the request and returns errWoken.
-func (s *Session) syncOnce(ctx context.Context, since, filter string) (*mautrix.RespSync, error) {
+// syncOnce makes one /sync request, long-polling only when poll is set. A
+// wake-up (keys for pending events arrived) cancels the request and returns
+// errWoken.
+func (s *Session) syncOnce(ctx context.Context, since, filter string, poll bool) (*mautrix.RespSync, error) {
 	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	woken := make(chan bool, 1)
@@ -234,8 +235,11 @@ func (s *Session) syncOnce(ctx context.Context, since, filter string) (*mautrix.
 		}
 	}()
 	timeout := pollTimeout
-	if since == "" {
-		// Answer the first sync at once instead of holding it open.
+	if !poll {
+		// Until Run has a first response, answer at once instead of
+		// holding the request open: the UI waits for that response
+		// before it shows the workspace, and a resumed sync with nothing
+		// new would otherwise take the whole poll timeout.
 		timeout = 0
 	}
 	resp, err := s.client.FullSyncRequest(reqCtx, mautrix.ReqSync{

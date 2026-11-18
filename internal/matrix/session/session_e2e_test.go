@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
@@ -220,7 +221,8 @@ func TestLoginAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2 := newSession(t, creds2, openStore(t, dbPath))
+	st2 := openStore(t, dbPath)
+	s2 := newSession(t, creds2, st2)
 	if got, _ := s2.tokens.GetNextBatch(e2e.Ctx(t)); got != saved {
 		t.Errorf("restarted session's token = %q, want %q", got, saved)
 	}
@@ -243,6 +245,23 @@ func TestLoginAndResume(t *testing.T) {
 	}
 	if s2.Client().DeviceID != creds.DeviceID {
 		t.Errorf("device = %s, want %s", s2.Client().DeviceID, creds.DeviceID)
+	}
+
+	// With nothing new on the server, the first batch after a restart
+	// still arrives at once: the UI waits for it before showing anything,
+	// so it must not wait out a long poll.
+	if err := r2.stop(); !errors.Is(err, context.Canceled) {
+		t.Errorf("Run = %v, want context.Canceled", err)
+	}
+	if err := st2.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s3 := newSession(t, creds2, openStore(t, dbPath))
+	began := time.Now()
+	r3 := start(t, s3)
+	r3.waitBatch(t, "the first batch of a quiet restart", func(b SyncBatch) bool { return b.Initial })
+	if waited := time.Since(began); waited > 5*time.Second {
+		t.Errorf("first batch of a quiet restart took %s, want under 5s", waited)
 	}
 }
 

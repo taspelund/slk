@@ -10,13 +10,25 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	tea "charm.land/bubbletea/v2"
 	"golang.org/x/term"
 	"maunium.net/go/mautrix"
 	_ "modernc.org/sqlite"
 
+	"github.com/gammons/slk/internal/config"
+	"github.com/gammons/slk/internal/debuglog"
+	"github.com/gammons/slk/internal/matrix/ident"
+	"github.com/gammons/slk/internal/matrix/rooms"
 	"github.com/gammons/slk/internal/matrix/session"
 	"github.com/gammons/slk/internal/matrix/store"
+	"github.com/gammons/slk/internal/matrix/svc"
+	"github.com/gammons/slk/internal/notify"
+	"github.com/gammons/slk/internal/ui"
+	"github.com/gammons/slk/internal/ui/messages"
+	"github.com/gammons/slk/internal/ui/styles"
+	"github.com/gammons/slk/internal/ui/workspace"
 )
 
 // The Matrix backend's entry points, behind hidden flags while it is being
@@ -164,5 +176,100 @@ func promptSecret(in *bufio.Reader, prompt string) (string, error) {
 // runMatrix runs slk against account, wired the way runDemo wires
 // internal/demo.
 func runMatrix(account string) error {
-	return errors.New("--matrix is not implemented yet")
+	dir := matrixAccountDir(account)
+	creds, err := session.LoadCredentials(dir)
+	if err != nil {
+		return fmt.Errorf("account %q: %w (log in with slk --matrix-login %s)", account, err, account)
+	}
+
+	cfg, err := config.Load(filepath.Join(xdgConfig(), "config.toml"))
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	messages.SetDateTokenTimeLayout(cfg.Appearance.TimestampFormat)
+	styles.LoadCustomThemes(os.DirFS(filepath.Join(xdgConfig(), "themes")))
+	styles.SetTransparentBackground(cfg.Appearance.TransparentBackground)
+	styles.Apply(cfg.Appearance.Theme, cfg.Theme)
+	styles.ApplyCompact(cfg.Appearance.Compact)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st, err := store.Open(ctx, filepath.Join(dir, "matrix.db"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	sess, err := session.New(ctx, creds, st, session.DebugLogger())
+	if err != nil {
+		return err
+	}
+	ids := ident.New(st)
+	model, err := rooms.New(ctx, st, ids, creds.UserID)
+	if err != nil {
+		return err
+	}
+	b := svc.New(svc.Deps{
+		Account:         account,
+		Session:         sess,
+		Store:           st,
+		IDs:             ids,
+		Rooms:           model,
+		TimestampFormat: cfg.Appearance.TimestampFormat,
+	})
+
+	app := ui.NewApp()
+	applyUISettings(app, uiSettingsFromConfig(cfg))
+	app.SetLoadingWorkspaces([]string{account})
+	app.SetWorkspaces([]workspace.WorkspaceItem{{ID: b.TeamID(), Name: account, Initials: workspace.WorkspaceInitials(account)}})
+	b.Install(app)
+	b.SetNotifications(svc.Notifications{
+		Notifier:        notify.New(cfg.Notifications.Enabled, cfg.Notifications.NotifyCommand),
+		Config:          cfg.Notifications,
+		ActiveChannelID: app.ActiveChannelID,
+	})
+	p := tea.NewProgram(app)
+
+	// The session syncs and the backend applies what it syncs from the
+	// start, but the UI hears nothing until the workspace exists: Run
+	// holds its sends until StartupMsgs returns, so they wait behind gate.
+	gate := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := sess.Run(ctx); err != nil && ctx.Err() == nil {
+			debuglog.General("matrix: sync stopped: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		_ = b.Run(ctx, sess.Events(), func(m tea.Msg) {
+			select {
+			case <-gate:
+				p.Send(m)
+			case <-ctx.Done():
+			}
+		})
+	}()
+	go func() {
+		msgs, err := b.StartupMsgs(ctx)
+		if err != nil {
+			debuglog.General("matrix: startup: %v", err)
+		}
+		for _, m := range msgs {
+			if ready, ok := m.(ui.WorkspaceReadyMsg); ok {
+				ready.Theme = cfg.ResolveTheme(ready.TeamID)
+				ready.SidebarWidth = cfg.ResolveWidth(ready.TeamID)
+				m = ready
+			}
+			p.Send(m)
+		}
+		close(gate)
+	}()
+
+	_, err = p.Run()
+	cancel()
+	wg.Wait()
+	return err
 }
