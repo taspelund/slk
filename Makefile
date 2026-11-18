@@ -30,3 +30,13 @@ demo-gifs: build
 		case $$tape in */settings.tape) continue;; esac; \
 		echo "vhs $$tape"; vhs $$tape || exit 1; \
 	done
+
+# End-to-end tests of the Matrix backend (internal/matrix, build tag
+# matrixe2e) against a throwaway Synapse in Docker, which this starts and
+# removes again. See scripts/matrix-dev/synapse.sh.
+.PHONY: matrix-e2e
+matrix-e2e:
+	@scripts/matrix-dev/synapse.sh start >/dev/null || { scripts/matrix-dev/synapse.sh stop; exit 1; }
+	@eval "$$(scripts/matrix-dev/synapse.sh env)"; \
+		go test -tags matrixe2e -count=1 ./internal/matrix/...; \
+		status=$$?; scripts/matrix-dev/synapse.sh stop; exit $$status
