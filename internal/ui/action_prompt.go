@@ -82,12 +82,6 @@ func (a *App) openActionPrompt(ref actionPromptRef) bool {
 	if !ok || !messages.HasButtonActions(msg) {
 		return false
 	}
-	fromInsert := a.mode == ModeInsert
-	fromThread := fromInsert && a.focusedPanel == PanelThread && a.threadVisible
-	if fromInsert {
-		a.compose.Blur()
-		a.threadCompose.Blur()
-	}
 	kept := a.actionQueue[:0]
 	for _, r := range a.actionQueue {
 		if r.key() != ref.key() {
@@ -96,12 +90,26 @@ func (a *App) openActionPrompt(ref actionPromptRef) bool {
 	}
 	a.actionQueue = kept
 	delete(a.promptToasted, ref.key())
-	a.prepareConfirmPrompt()
-	a.confirmPrompt.OpenChoice(a.actionChoice(ref, msg))
+	a.openQueuedChoice(a.actionChoice(ref, msg))
 	a.shownPrompt = &ref
+	return true
+}
+
+// openQueuedChoice opens a dialog that waited for the user (an action or
+// verification dialog). Over insert mode it blurs the composers and
+// records which one was focused, so closing the dialog puts the user back
+// to typing (afterConfirmPrompt).
+func (a *App) openQueuedChoice(c confirmprompt.Choice) {
+	fromInsert := a.mode == ModeInsert
+	fromThread := fromInsert && a.focusedPanel == PanelThread && a.threadVisible
+	if fromInsert {
+		a.compose.Blur()
+		a.threadCompose.Blur()
+	}
+	a.prepareConfirmPrompt()
+	a.confirmPrompt.OpenChoice(c)
 	a.shownPromptInsert, a.shownPromptThread = fromInsert, fromThread
 	a.SetMode(ModeConfirm)
-	return true
 }
 
 // clearShownPrompt forgets the action dialog on screen, and where to put
@@ -109,6 +117,7 @@ func (a *App) openActionPrompt(ref actionPromptRef) bool {
 func (a *App) clearShownPrompt() {
 	a.shownPrompt = nil
 	a.shownPromptInsert, a.shownPromptThread = false, false
+	a.verify.shown = ""
 }
 
 // resetActionPrompts closes the action dialog and forgets every queued
@@ -218,13 +227,12 @@ func (a *App) enqueueActionPrompt(ref actionPromptRef) tea.Cmd {
 // the key's command has run), leaving insert mode, and a send clearing the
 // composer.
 func (a *App) tryOpenActionPrompt() tea.Cmd {
+	if cmd, waiting := a.tryOpenVerifyPrompt(); waiting {
+		return cmd
+	}
 	for len(a.actionQueue) > 0 {
 		ref := a.actionQueue[0]
-		if a.mode.IsModalOverlay() {
-			return a.toastActionWaiting(ref)
-		}
-		if a.mode == ModeCommand || a.mode == ModeSearch ||
-			(a.mode == ModeInsert && a.focusedComposerValue() != "") {
+		if a.promptMustWait() {
 			return a.toastActionWaiting(ref)
 		}
 		a.actionQueue = a.actionQueue[1:]
@@ -234,6 +242,14 @@ func (a *App) tryOpenActionPrompt() tea.Cmd {
 		delete(a.promptToasted, ref.key())
 	}
 	return nil
+}
+
+// promptMustWait reports that the user is busy, so a waiting dialog must
+// not open: another modal is up, or they are typing (insert mode with text
+// in the focused composer, or a ':' command or search query).
+func (a *App) promptMustWait() bool {
+	return a.mode.IsModalOverlay() || a.mode == ModeCommand || a.mode == ModeSearch ||
+		(a.mode == ModeInsert && a.focusedComposerValue() != "")
 }
 
 func (a *App) focusedComposerValue() string {

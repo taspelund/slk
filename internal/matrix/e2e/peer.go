@@ -15,6 +15,7 @@ import (
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/crypto/backup"
+	"maunium.net/go/mautrix/crypto/verificationhelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
@@ -39,6 +40,9 @@ type Peer struct {
 
 	backupKey     *backup.MegolmBackupKey
 	backupVersion id.KeyBackupVersion
+
+	verify       *verificationhelper.VerificationHelper // peer_verify.go
+	verifyEvents []VerifyEvent                          // under mu; notify too
 }
 
 // NewPeer registers a new user (prefix plus a random suffix) and logs a
@@ -74,6 +78,7 @@ func LoginPeer(t testing.TB, srv Server, userID id.UserID, password string) *Pee
 	}
 
 	p := &Peer{Client: cli, Crypto: helper, UserID: userID, Password: password, notify: make(chan struct{})}
+	p.setupVerification(ctx, t)
 	syncCtx, cancel := context.WithCancel(context.Background())
 	syncer := cli.Syncer.(*mautrix.DefaultSyncer)
 	syncer.OnEvent(func(_ context.Context, evt *event.Event) {
@@ -383,7 +388,9 @@ func (p *Peer) ShareRoomKey(t testing.TB, room id.RoomID, users ...id.UserID) {
 // SetupRecovery makes the peer's account recoverable the way Element does
 // on first login: cross-signing keys (stored in secret storage under a new
 // default key), this device signed with them, and a server-side key backup
-// whose private key is also in secret storage. It returns the recovery key.
+// whose private key is also in secret storage. Like Element, the device
+// also keeps those four secrets itself, so it answers m.secret.request
+// from a device of its user it has verified. It returns the recovery key.
 // Call BackupRoomKeys to upload the room keys this device holds.
 func (p *Peer) SetupRecovery(t testing.TB) string {
 	t.Helper()
@@ -441,6 +448,16 @@ func (p *Peer) SetupRecovery(t testing.TB) string {
 	}
 	if err := mach.SSSS.SetEncryptedAccountData(ctx, event.AccountDataMegolmBackupKey, bk.Bytes(), ssssKey); err != nil {
 		t.Fatalf("e2e: %s: store backup key: %v", p.UserID, err)
+	}
+	for name, secret := range map[id.Secret][]byte{
+		id.SecretXSMaster:       xsign.MasterKey.Seed(),
+		id.SecretXSSelfSigning:  xsign.SelfSigningKey.Seed(),
+		id.SecretXSUserSigning:  xsign.UserSigningKey.Seed(),
+		id.SecretMegolmBackupV1: bk.Bytes(),
+	} {
+		if err := mach.CryptoStore.PutSecret(ctx, name, base64.RawStdEncoding.EncodeToString(secret)); err != nil {
+			t.Fatalf("e2e: %s: keep secret %s: %v", p.UserID, name, err)
+		}
 	}
 	p.backupKey, p.backupVersion = bk, resp.Version
 	return recoveryKey

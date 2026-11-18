@@ -161,6 +161,8 @@ type Session struct {
 	// nothing, so it is logged once. Only the upload loop touches it.
 	backupKick    chan struct{}
 	backupSkipped string
+	// verify is interactive verification (verify.go).
+	verify *verifier
 }
 
 // SetSyncPresence sets the presence every later /sync request asserts.
@@ -208,6 +210,9 @@ func New(ctx context.Context, creds Credentials, st *store.Store, log zerolog.Lo
 	helper.Machine.SessionReceived = func(_ context.Context, _ id.RoomID, session id.SessionID, _ uint32) {
 		s.keys.received(session)
 		s.kickBackup()
+	}
+	if err := s.setupVerification(ctx); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -289,13 +294,21 @@ func (s *Session) VerifyWithRecoveryKey(ctx context.Context, key string) error {
 	if err != nil {
 		return fmt.Errorf("session: key backup key: %w", err)
 	}
+	return s.restoreKeyBackup(ctx, backupKey)
+}
+
+// restoreKeyBackup keeps backupKey as the device's backup key and imports
+// every room key in the latest backup version with it. It is the end of
+// both verifications: VerifyWithRecoveryKey reads the key from secret
+// storage, an interactive verification receives it from the other device.
+func (s *Session) restoreKeyBackup(ctx context.Context, backupKey *backup.MegolmBackupKey) error {
 	if err := s.saveBackupKey(ctx, backupKey); err != nil {
 		return err
 	}
 	// The upload loop picks the key up on its next pass: after this
 	// restore, the keys the backup lacks go up.
 	defer s.kickBackup()
-	version, err := mach.DownloadAndStoreLatestKeyBackup(ctx, backupKey)
+	version, err := s.crypto.Machine.DownloadAndStoreLatestKeyBackup(ctx, backupKey)
 	if errors.Is(err, mautrix.MNotFound) || (err == nil && version == "") {
 		return ErrNoKeyBackup
 	} else if err != nil {

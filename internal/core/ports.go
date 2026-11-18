@@ -459,6 +459,24 @@ type LinkTarget struct {
 	ThreadTS  ids.ThreadTS
 }
 
+// VerificationService answers interactive verification of this device
+// with another of the account's devices (on Matrix: comparing emoji). The
+// backend reports each verification's steps to the UI as ui.Verify*Msg
+// values, whose ID the answers take. Every method blocks on the network
+// and is called inside a tea.Cmd; the Msg it returns (a toast, or nil)
+// goes back to the App. Slack has none (nil).
+type VerificationService interface {
+	// Request asks the account's other devices to verify this one.
+	Request() Msg
+	// Accept accepts another device's request.
+	Accept(id string) Msg
+	// Confirm says the emoji match the other device's.
+	Confirm(id string) Msg
+	// Cancel declines a request or ends a verification; mismatch says
+	// the emoji did not match.
+	Cancel(id string, mismatch bool) Msg
+}
+
 // AvatarService renders user avatars for the message panes.
 type AvatarService interface {
 	// Avatar returns the rendered half-block avatar for userID, or ""

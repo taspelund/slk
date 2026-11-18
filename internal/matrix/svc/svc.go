@@ -25,6 +25,7 @@
 //	profile.go  fillProfile  profiles, presence (WP-Profile)
 //	live.go     StartupMsgs, Run, SetNotifications: sync batches -> ui messages (WP-Live)
 //	links.go    linkResolver  matrix.to links -> rooms and messages (WP-UI)
+//	verify.go   installVerification  emoji device verification <-> ui (WP-Verify)
 package svc
 
 import (
@@ -117,6 +118,7 @@ func (b *Backend) Install(app *ui.App) {
 	if p.images != nil {
 		app.SetImageFetcher(p.images)
 	}
+	b.installVerification(app)
 }
 
 // ports builds the backend's port implementations; ReadOnly leaves out
