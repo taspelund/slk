@@ -251,8 +251,9 @@ func TestTeamIDIsMPlusTheAccountsAlias(t *testing.T) {
 	}
 }
 
-// TestReadOnlyChangesNothing: a read-only backend opens a room without
-// marking it read and has no port that changes the account.
+// TestReadOnlyChangesNothing: a read-only backend has no port that
+// changes the account; opening a room reads it in this process only, until
+// someone else posts.
 func TestReadOnlyChangesNothing(t *testing.T) {
 	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/messages") {
@@ -264,18 +265,34 @@ func TestReadOnlyChangesNothing(t *testing.T) {
 	h.b.d.ReadOnly = true
 	h.b.d.Dir = t.TempDir()
 	h.apply(timeline(general, h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "hi"})))
+	if !h.b.readStates()[h.alias].HasUnread {
+		t.Fatal("room not unread before it is opened")
+	}
 	p := h.b.ports()
 	msg, ok := p.channels.Fetch(ids.ChannelID(h.alias), "").(ui.MessagesLoadedMsg)
-	if !ok || len(msg.Messages) != 1 || msg.MarkedTS != "" {
+	if !ok || len(msg.Messages) != 1 || msg.MarkedTS != msg.Messages[0].TS {
 		t.Fatalf("Fetch = %#v", msg)
 	}
-	time.Sleep(100 * time.Millisecond) // a mark would run in a goroutine
+	deadline := time.Now().Add(5 * time.Second) // the mark runs in a goroutine
+	for h.b.readStates()[h.alias].HasUnread {
+		if time.Now().After(deadline) {
+			t.Fatal("room still unread after it was opened")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := h.b.unreadWorkspaces(); got != nil {
+		t.Errorf("unread workspaces after reading = %v", got)
+	}
+	h.apply(timeline(general, h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "later"})))
+	if !h.b.readStates()[h.alias].HasUnread {
+		t.Error("a later message did not make the room unread again")
+	}
 	for _, r := range h.reqs() {
 		if !strings.HasPrefix(r, "GET ") {
 			t.Errorf("read-only backend sent %s", r)
 		}
 	}
-	if p.channels.MarkRead != nil || p.messages.Send != nil || p.threads.SendReply != nil || p.reactions != nil || p.presence != nil {
+	if p.messages.Send != nil || p.threads.SendReply != nil || p.reactions != nil || p.presence != nil {
 		t.Errorf("read-only backend has write ports: %+v", p)
 	}
 	res, ok := p.files.Upload(h.alias, "", "", nil)().(ui.UploadResultMsg)

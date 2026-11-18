@@ -64,6 +64,9 @@ type Backend struct {
 	threadSweep  time.Time
 	threadCounts map[id.EventID]int
 	threadJoined map[id.EventID]bool
+	// localRead is how far each room (by alias) was read in this
+	// process without telling the server: read-only mode's MarkRead.
+	localRead map[string]string
 
 	// live is the live side's state (live.go); write, files and
 	// profile are the other work packages' state, each defined and
@@ -94,6 +97,7 @@ func newBackend(d Deps, rs roomSource, cli *mautrix.Client, self id.UserID) *Bac
 		synced:       map[string]time.Time{},
 		threadCounts: map[id.EventID]int{},
 		threadJoined: map[id.EventID]bool{},
+		localRead:    map[string]string{},
 		live:         newLiveState(),
 		write:        newWriteState(),
 		files:        newFilesState(),

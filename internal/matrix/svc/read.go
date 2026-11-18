@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -146,7 +147,7 @@ func (b *Backend) fetch(alias string, markRead func(ids.ChannelID, ids.MessageTS
 	out := ui.MessagesLoadedMsg{
 		ChannelID:  alias,
 		Messages:   msgs,
-		LastReadTS: b.rooms.Snapshot().ReadStates[alias].LastReadTS,
+		LastReadTS: b.readStates()[alias].LastReadTS,
 	}
 	if n := len(msgs); n > 0 && markRead != nil {
 		out.MarkedTS = msgs[n-1].TS
@@ -891,15 +892,45 @@ func (b *Backend) searchChannel(alias, query string) core.Msg {
 	return out
 }
 
-// readStates is UnreadService.ChannelReadStates.
+// readStates is UnreadService.ChannelReadStates: the room model's, with
+// rooms read in this process only (markReadLocal) read up to where they
+// were marked, until someone else posts after that.
 func (b *Backend) readStates() map[string]core.ReadState {
-	return b.rooms.Snapshot().ReadStates
+	states := b.rooms.Snapshot().ReadStates
+	b.mu.Lock()
+	local := maps.Clone(b.localRead)
+	b.mu.Unlock()
+	for alias, ts := range local {
+		rs, ok := states[alias]
+		room, known := b.rooms.Room(alias)
+		if !ok || !known {
+			continue
+		}
+		rs.LastReadTS = max(rs.LastReadTS, ts)
+		if rs.HasUnread {
+			newest, err := b.d.Store.LatestUnreadCandidate(context.Background(), room.ID, b.self)
+			if err == nil && newest <= ts {
+				rs.HasUnread, rs.MentionCount = false, 0
+			}
+		}
+		states[alias] = rs
+	}
+	return states
+}
+
+// markReadLocal is read-only mode's ChannelService.MarkRead: the room
+// reads as read up to ts in this process, and the server is not told.
+func (b *Backend) markReadLocal(ch ids.ChannelID, ts ids.MessageTS) core.Msg {
+	b.mu.Lock()
+	b.localRead[string(ch)] = max(b.localRead[string(ch)], string(ts))
+	b.mu.Unlock()
+	return ui.ChannelMarkedReadMsg{ChannelID: string(ch)}
 }
 
 // unreadWorkspaces is UnreadService.UnreadWorkspaces: this account's
 // workspace when one of its rooms is unread.
 func (b *Backend) unreadWorkspaces() []string {
-	for _, rs := range b.rooms.Snapshot().ReadStates {
+	for _, rs := range b.readStates() {
 		if rs.HasUnread {
 			return []string{b.teamID}
 		}

@@ -122,6 +122,7 @@ func (b *Backend) ports() ports {
 	b.fillFiles(&p)
 	b.fillProfile(&p)
 	if b.d.ReadOnly {
+		p.channels.MarkRead = b.markReadLocal
 		p.presence = nil
 		if p.files != nil {
 			p.files = core.NewFileService(func(string, string, string, []core.PendingAttachment) core.Cmd {
