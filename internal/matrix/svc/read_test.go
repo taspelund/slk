@@ -4,17 +4,19 @@ import (
 	"context"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/ids"
-	"github.com/gammons/slk/internal/matrix/rooms"
+	"github.com/gammons/slk/internal/matrix/store"
 	"github.com/gammons/slk/internal/ui"
 )
 
@@ -77,7 +79,7 @@ func TestFetchOnAnEmptyStorePagesTheServer(t *testing.T) {
 	if reqs := h.reqs(); len(reqs) != 1 || !strings.Contains(reqs[0], "dir=b") || strings.Contains(reqs[0], "from=") {
 		t.Errorf("requests = %q, want one /messages from the live end", reqs)
 	}
-	if got := h.f.backfilled; len(got) != 1 || !reflect.DeepEqual(got[0], []id.EventID{third.ID, react.ID, second.ID, first.ID}) {
+	if got := h.m.backfills(); len(got) != 1 || !reflect.DeepEqual(got[0], []id.EventID{third.ID, react.ID, second.ID, first.ID}) {
 		t.Errorf("Backfill got %v, want newest first", got)
 	}
 	<-done
@@ -101,8 +103,8 @@ func TestFetchOnAnEmptyStorePagesTheServer(t *testing.T) {
 
 func TestFetchUsesTheLastReadTSFromTheSnapshot(t *testing.T) {
 	h := newHarness(t, nil)
-	_, ts := h.text(alice, "hi")
-	h.f.readStates[h.alias] = core.ReadState{LastReadTS: ts}
+	hi, ts := h.text(alice, "hi")
+	h.receipt(hi.ID, "")
 	msg := h.b.fetch(h.alias, nil).(ui.MessagesLoadedMsg)
 	if msg.LastReadTS != ts || len(msg.Messages) != 1 {
 		t.Fatalf("Fetch = %+v", msg)
@@ -192,20 +194,164 @@ func TestFetchOlderPagesTheStoreThenTheServer(t *testing.T) {
 	}
 }
 
-func TestPagingBackStartsFromAGapAtTheOldestEvent(t *testing.T) {
-	var h *harness
-	h = newHarness(t, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, map[string]any{"start": "x", "chunk": []any{}})
-	})
-	_, ts := h.text(alice, "first after a limited sync")
-	if _, err := h.st.AddGap(context.Background(), general, "gap-token", ts); err != nil {
-		t.Fatal(err)
+// limited applies evs as a limited /sync timeline from prevBatch, which
+// records a gap before them.
+func (h *harness) limited(prevBatch string, evs ...*event.Event) {
+	h.t.Helper()
+	resp := timeline(general, evs...)
+	tl := &ljoin(resp, general).Timeline
+	tl.Limited, tl.PrevBatch = true, prevBatch
+	h.apply(resp)
+}
+
+func (h *harness) gaps() []store.Gap {
+	h.t.Helper()
+	g, err := h.st.Gaps(context.Background(), general)
+	if err != nil {
+		h.t.Fatal(err)
 	}
+	return g
+}
+
+func TestFetchFillsTheGapOfALimitedFirstSync(t *testing.T) {
+	var h *harness
+	var older []*event.Event // newest first
+	h = newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("from") != "gap-token" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, map[string]any{"start": "gap-token", "chunk": wires(older...)})
+	})
+	a := h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "a"})
+	b := h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "b"})
+	older = []*event.Event{b, a}
+	h.limited("gap-token", h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "first after a limited sync"}))
+
+	msg := h.b.fetch(h.alias, nil).(ui.MessagesLoadedMsg)
+	if got := texts(msg.Messages); !reflect.DeepEqual(got, []string{"a", "b", "first after a limited sync"}) {
+		t.Fatalf("messages = %q", got)
+	}
+	assertAscending(t, msg.Messages)
+	if reqs := h.reqs(); len(reqs) != 1 || !strings.Contains(reqs[0], "/messages") {
+		t.Fatalf("requests = %q, want one /messages from the gap's prev_batch", reqs)
+	}
+	if f := h.m.fills(); len(f) != 1 || f[0].next != "" || !reflect.DeepEqual(f[0].events, []id.EventID{b.ID, a.ID}) {
+		t.Errorf("FillGap calls = %+v", f)
+	}
+	if g := h.gaps(); len(g) != 0 {
+		t.Errorf("gaps after the fill = %+v", g)
+	}
+	// The start was reached: no more requests.
 	h.b.fetch(h.alias, nil)
-	if reqs := h.reqs(); len(reqs) != 1 || !strings.Contains(reqs[0], "/messages") || !strings.Contains(reqs[0], "from=gap-token") {
-		t.Fatalf("requests = %q, want /messages from the gap's prev_batch", reqs)
+	if n := len(h.reqs()); n != 1 {
+		t.Errorf("%d requests after the start was reached", n)
 	}
 }
+
+func TestFetchFillsAGapInTheNewestPage(t *testing.T) {
+	var h *harness
+	var hole []*event.Event // newest first, then a stored event
+	h = newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("from") {
+		case "hole":
+			writeJSON(t, w, map[string]any{"start": "hole", "end": "hole2", "chunk": wires(hole[:2]...)})
+		case "hole2":
+			writeJSON(t, w, map[string]any{"start": "hole2", "end": "hole3", "chunk": wires(hole[2:]...)})
+		case "":
+			// /context of the oldest stored event: the room starts there.
+			writeJSON(t, w, map[string]any{"event": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	var want []string
+	var oldestStored *event.Event
+	for i := range 3 {
+		e, _ := h.text(alice, "before "+itoa3(i))
+		oldestStored = e
+		want = append(want, "before "+itoa3(i))
+	}
+	var missing []*event.Event
+	for i := range 3 {
+		missing = append(missing, h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "missed " + itoa3(i)}))
+		want = append(want, "missed "+itoa3(i))
+	}
+	// The server's clock was off for one of them: the page's order, not
+	// origin time, places it.
+	missing[1].Timestamp = missing[0].Timestamp - 1
+	slices.Reverse(missing)
+	hole = append(missing, wiresEvent(oldestStored)...)
+	var after []*event.Event
+	for i := range 2 {
+		after = append(after, h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "after " + itoa3(i)}))
+		want = append(want, "after "+itoa3(i))
+	}
+	h.limited("hole", after...)
+	if g := h.gaps(); len(g) != 1 {
+		t.Fatalf("gaps = %+v", g)
+	}
+
+	msg := h.b.fetch(h.alias, nil).(ui.MessagesLoadedMsg)
+	if got := texts(msg.Messages); !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %q\nwant %q", got, want)
+	}
+	assertAscending(t, msg.Messages)
+	if reqs := h.reqs(); len(reqs) != 3 || !strings.Contains(reqs[2], "/context/") {
+		t.Errorf("requests = %q, want two pages of the gap, then /context for the room's start", reqs)
+	}
+	if g := h.gaps(); len(g) != 0 {
+		t.Errorf("gaps after the fill = %+v", g)
+	}
+}
+
+func TestFetchOlderFillsTheGapItMeets(t *testing.T) {
+	var h *harness
+	var hole []*event.Event
+	h = newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/context/"):
+			writeJSON(t, w, map[string]any{"event": map[string]any{}})
+		case r.URL.Query().Get("from") == "hole":
+			writeJSON(t, w, map[string]any{"start": "hole", "end": "further", "chunk": wires(hole...)})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	old, oldTS := h.text(alice, "old")
+	missed := h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "missed"})
+	hole = []*event.Event{missed, old}
+	var after []*event.Event
+	for i := range pageSize + 5 {
+		after = append(after, h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "new " + itoa3(i)}))
+	}
+	h.limited("hole", after...)
+
+	// The newest page ends above the gap: Fetch leaves it.
+	msg := h.b.fetch(h.alias, nil).(ui.MessagesLoadedMsg)
+	if len(msg.Messages) != pageSize || len(h.reqs()) != 0 || len(h.gaps()) != 1 {
+		t.Fatalf("Fetch: %d messages, %d requests, %d gaps", len(msg.Messages), len(h.reqs()), len(h.gaps()))
+	}
+	anchor := msg.Messages[0].TS
+	older := h.b.fetchOlder(h.alias, anchor).(ui.OlderMessagesLoadedMsg)
+	want := []string{"old", "missed"}
+	for i := range 5 {
+		want = append(want, "new "+itoa3(i))
+	}
+	if got := texts(older.Messages); !reflect.DeepEqual(got, want) || older.AnchorTS != anchor {
+		t.Fatalf("FetchOlder = %q (anchor %s), want %q", got, older.AnchorTS, want)
+	}
+	assertAscending(t, older.Messages)
+	if older.Messages[len(older.Messages)-1].TS >= anchor || older.Messages[0].TS != oldTS {
+		t.Errorf("page %s..%s, anchor %s", older.Messages[0].TS, older.Messages[len(older.Messages)-1].TS, anchor)
+	}
+	if reqs := h.reqs(); len(h.gaps()) != 0 || len(reqs) != 2 || !strings.Contains(reqs[1], "/context/") {
+		t.Errorf("after: %d gaps, requests %q", len(h.gaps()), reqs)
+	}
+}
+
+// wiresEvent is e in a slice, for appending to a page.
+func wiresEvent(e *event.Event) []*event.Event { return []*event.Event{e} }
 
 func TestFetchAroundReturnsAPageAroundTheTarget(t *testing.T) {
 	h := newHarness(t, nil)
@@ -230,7 +376,7 @@ func TestFetchAroundReturnsAPageAroundTheTarget(t *testing.T) {
 	}
 }
 
-func TestThreadFetchReadsRepliesThroughTheServer(t *testing.T) {
+func TestThreadFetchStoresMissingReplies(t *testing.T) {
 	var h *harness
 	var replies []*event.Event // newest first
 	h = newHarness(t, func(w http.ResponseWriter, r *http.Request) {
@@ -246,16 +392,15 @@ func TestThreadFetchReadsRepliesThroughTheServer(t *testing.T) {
 	}
 	r1 := reply(bob, "r1")
 	h.live(r1)
+	// r2 and r3 were never synced (a gap); r2 is older than a stored
+	// channel message, r3 newer than everything.
 	r2 := reply(self, "r2")
-	h.live(r2)
-	// r3 is newer than the stored timeline's start but was never stored
-	// (a gap): Backfill could only give it a TS before the root, so it
-	// is left out.
+	_, laterTS := h.text(alice, "later")
 	r3 := reply(bob, "r3")
 	replies = []*event.Event{r3, r2, r1}
 
 	msg := h.b.fetchThread(h.alias, rootTS).(ui.ThreadRepliesLoadedMsg)
-	if msg.ThreadTS != rootTS || msg.FromCache || !reflect.DeepEqual(texts(msg.Replies), []string{"r1", "r2"}) {
+	if msg.ThreadTS != rootTS || msg.FromCache || !reflect.DeepEqual(texts(msg.Replies), []string{"r1", "r2", "r3"}) {
 		t.Fatalf("Fetch = %+v", msg)
 	}
 	assertAscending(t, msg.Replies)
@@ -264,23 +409,58 @@ func TestThreadFetchReadsRepliesThroughTheServer(t *testing.T) {
 			t.Errorf("reply %q: TS %s, ThreadTS %q, want after root %s", r.Text, r.TS, r.ThreadTS, rootTS)
 		}
 	}
-	if got := h.f.backfilled; len(got) != 1 || !reflect.DeepEqual(got[0], []id.EventID{r2.ID, r1.ID}) {
-		t.Errorf("Backfill got %v, want the mapped replies newest first", got)
+	if r2TS, r3TS := h.tsOf(r2.ID), h.tsOf(r3.ID); !(r2TS < laterTS && laterTS < r3TS) {
+		t.Errorf("r2 %s, later %s, r3 %s: not placed by time", r2TS, laterTS, r3TS)
 	}
-	if _, mapped, _ := h.f.ids.TS(context.Background(), general, r3.ID); mapped {
-		t.Errorf("r3 got a TS")
+	if got := h.m.backfills(); len(got) != 1 || !reflect.DeepEqual(got[0], []id.EventID{r3.ID, r2.ID, r1.ID}) {
+		t.Errorf("Backfill got %v, want the replies newest first", got)
 	}
 	cache := h.b.threadCache(h.alias, rootTS)
-	if !reflect.DeepEqual(texts(cache), []string{"root", "r1", "r2"}) || cache[0].ReplyCount != 2 || cache[0].ThreadTS != rootTS {
+	if !reflect.DeepEqual(texts(cache), []string{"root", "r1", "r2", "r3"}) || cache[0].ReplyCount != 3 || cache[0].ThreadTS != rootTS {
 		t.Errorf("CacheRead = %+v", cache)
 	}
 	if reqs := h.reqs(); len(reqs) != 1 || !strings.Contains(reqs[0], "dir=b") {
 		t.Errorf("requests = %q", reqs)
 	}
+	// The channel page shows the root with its count, not the replies.
+	if got := texts(h.page()); !reflect.DeepEqual(got, []string{"root", "later"}) {
+		t.Errorf("channel page = %q", got)
+	}
 
-	h.f.threadReceipts[root.ID] = rooms.Receipt{Room: general, Thread: root.ID, TS: msg.Replies[0].TS}
-	if got := h.b.threadLastRead(h.alias, rootTS); got != msg.Replies[0].TS {
-		t.Errorf("ThreadLastRead = %q, want %q", got, msg.Replies[0].TS)
+	h.receipt(r2.ID, string(root.ID))
+	if got := h.b.threadLastRead(h.alias, rootTS); got != h.tsOf(r2.ID) {
+		t.Errorf("ThreadLastRead = %q, want %q", got, h.tsOf(r2.ID))
+	}
+}
+
+func TestThreadFetchStoresAMissingRoot(t *testing.T) {
+	var h *harness
+	var root *event.Event
+	var replies []*event.Event
+	h = newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/relations/"):
+			writeJSON(t, w, map[string]any{"chunk": wires(replies...)})
+		case strings.Contains(r.URL.Path, "/event/"):
+			writeJSON(t, w, wire(root))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	root = h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "old root"})
+	replies = []*event.Event{h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "old reply", "m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root.ID}})}
+	h.text(alice, "stored")
+	// The root has a TS (it was stored once, then deleted) but no row.
+	rootTS, err := h.ids.TSForBackfill(context.Background(), general, root.ID, time.UnixMilli(root.Timestamp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := h.b.fetchThread(h.alias, rootTS).(ui.ThreadRepliesLoadedMsg)
+	if !reflect.DeepEqual(texts(msg.Replies), []string{"old reply"}) {
+		t.Fatalf("Fetch = %+v", msg)
+	}
+	if cache := h.b.threadCache(h.alias, rootTS); !reflect.DeepEqual(texts(cache), []string{"old root", "old reply"}) {
+		t.Errorf("CacheRead = %q", texts(cache))
 	}
 }
 
@@ -304,20 +484,20 @@ func TestFetchAroundAnEventNotStoredUsesContext(t *testing.T) {
 	_, firstTS := h.text(alice, "first stored")
 	h.text(alice, "second stored")
 	// The target has a TS (it was stored once, then deleted) and is
-	// older than everything stored; the event after it in the reply is
-	// newer and has none, so it cannot be placed.
-	targetTS, err := h.f.ids.TSForBackfill(context.Background(), general, target.ID, time.UnixMilli(target.Timestamp))
+	// older than everything stored; the event after it in the reply was
+	// never stored and is newer than everything.
+	targetTS, err := h.ids.TSForBackfill(context.Background(), general, target.ID, time.UnixMilli(target.Timestamp))
 	if err != nil {
 		t.Fatal(err)
 	}
-	unplaced := h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "unplaced"})
-	after = []*event.Event{unplaced}
+	newest := h.ev(bob, "m.room.message", map[string]any{"msgtype": "m.text", "body": "newest"})
+	after = []*event.Event{newest}
 
 	msg := h.b.fetchAround(h.alias, targetTS).(ui.MessagesAroundLoadedMsg)
 	if msg.Err != nil {
 		t.Fatalf("FetchAround: %v", msg.Err)
 	}
-	if got := texts(msg.Messages); !reflect.DeepEqual(got, []string{"older", "target", "first stored", "second stored"}) {
+	if got := texts(msg.Messages); !reflect.DeepEqual(got, []string{"older", "target", "first stored", "second stored", "newest"}) {
 		t.Errorf("window = %q", got)
 	}
 	assertAscending(t, msg.Messages)
@@ -350,13 +530,12 @@ func TestListThreadsListsThreadsTheAccountIsIn(t *testing.T) {
 	lastMine := thread(bob, mine.ID, "b")
 	thread(bob, theirs.ID, "c")
 	thread(self, joined.ID, "d")
-	h.f.threadReceipts[mine.ID] = rooms.Receipt{TS: "0000000000.000000"}
 
 	msg := h.b.listThreads(h.b.TeamID()).(ui.ThreadsListLoadedMsg)
 	if msg.TeamID != h.b.TeamID() || !msg.SubscriptionsAvailable || len(msg.Summaries) != 2 {
 		t.Fatalf("ListFetch = %+v", msg)
 	}
-	res := h.f.Resolver()
+	res := h.res()
 	got := msg.Summaries[0] // "joined in" has the newest reply
 	if got.ThreadTS != joinedTS || got.ParentUserID != res.UserAlias(bob) || got.LastReplyBy != res.UserAlias(self) || got.Unread {
 		t.Errorf("first summary = %+v", got)
@@ -405,9 +584,13 @@ func TestUnreadStatesComeFromTheSnapshot(t *testing.T) {
 	if got := h.b.unreadWorkspaces(); got != nil {
 		t.Errorf("UnreadWorkspaces = %v with nothing unread", got)
 	}
-	h.f.readStates[h.alias] = core.ReadState{LastReadTS: "1.0", HasUnread: true, MentionCount: 2}
+	read, readTS := h.text(alice, "read")
+	h.receipt(read.ID, "")
+	resp := timeline(general, h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "unread"}))
+	ljoin(resp, general).UnreadNotifications = &mautrix.UnreadNotificationCounts{HighlightCount: 2, NotificationCount: 1}
+	h.apply(resp)
 	states := h.b.readStates()
-	if !reflect.DeepEqual(states, map[string]core.ReadState{h.alias: {LastReadTS: "1.0", HasUnread: true, MentionCount: 2}}) {
+	if !reflect.DeepEqual(states, map[string]core.ReadState{h.alias: {LastReadTS: readTS, HasUnread: true, MentionCount: 2}}) {
 		t.Errorf("ChannelReadStates = %+v", states)
 	}
 	if got := h.b.unreadWorkspaces(); !reflect.DeepEqual(got, []string{h.b.TeamID()}) {
@@ -426,7 +609,7 @@ func TestLookupAndAvatar(t *testing.T) {
 	if _, _, ok := p.channels.Lookup("CNOSUCHROOM"); ok {
 		t.Errorf("Lookup of an unknown alias succeeded")
 	}
-	av := p.avatars.Avatar(h.f.Resolver().UserAlias(alice))
+	av := p.avatars.Avatar(h.res().UserAlias(alice))
 	if !strings.Contains(av, " AL ") || strings.Count(av, "\n") != 1 {
 		t.Errorf("Avatar = %q", av)
 	}

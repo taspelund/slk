@@ -633,7 +633,7 @@ func TestBackfillSendsNothing(t *testing.T) {
 		t.Fatalf("backfill changes = %+v", ch.Timeline)
 	}
 	var sent []tea.Msg
-	r := &liveRun{b: f.b, l: f.b.live(), send: func(m tea.Msg) { sent = append(sent, m) }, started: true,
+	r := &liveRun{b: f.b, l: f.b.live, send: func(m tea.Msg) { sent = append(sent, m) }, started: true,
 		typing: map[id.RoomID][]id.UserID{}, undecrypted: map[id.EventID]bool{}}
 	r.changes(context.Background(), rooms.Changes{Timeline: ch.Timeline}, true, false)
 	if len(sent) != 0 {

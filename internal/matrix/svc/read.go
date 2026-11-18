@@ -28,16 +28,29 @@ import (
 // The read side: channel history, threads, unread state, search and
 // avatars.
 //
-// History comes from the store. When it runs out (fewer than a page, or
-// FetchOlder past the oldest stored event), Fetch and FetchOlder page
-// back on the server with /messages and hand what they get to the room
-// model's Backfill, which mints TS values and stores the events; then
-// they read the store again. Where to page back from is backToken's
-// business. A gap inside the stored timeline (a limited /sync on
-// reconnect) is not filled: Backfill mints TS values before the room's
-// oldest, so events fetched for a hole in the middle would sort above
-// everything. Pages across such a hole show the stored events on both
-// sides of it.
+// History comes from the store; the server fills it in, within a budget
+// of serverPages requests per Fetch or FetchOlder, before the store is
+// read again for the page:
+//
+//   - Gaps (store.Gaps, holes a limited /sync leaves). A page read crosses
+//     a gap when the gap's after_ts is inside the page: above its oldest
+//     row (or anywhere below the top when the store has nothing older
+//     than the page) and at or below its top (the TS FetchOlder pages
+//     before; no limit for Fetch's newest page). The newest crossed gap
+//     is paged with /messages from its prev_batch and the page handed to
+//     rooms.Model.FillGap, which places the events in the hole and
+//     removes or moves the gap; then the page is read again, until no
+//     gap crosses it or the budget is spent. So Fetch fills the holes
+//     inside the newest page, and FetchOlder those it meets going back.
+//     A hole above FetchOlder's anchor (inside the buffer on screen) is
+//     not filled by it: the events would land amid messages already
+//     shown; the next Fetch fills it if it is in the newest page.
+//   - The room's start. When the page is still short and the store has
+//     nothing older, paginate pages back from the oldest stored event
+//     (backTokenFor) and hands the events to rooms.Model.Backfill.
+//
+// Threads (/relations) and /context windows go through Backfill too,
+// which places each event among the stored ones by its origin time.
 
 const (
 	// pageSize is how many message rows a history page holds.
@@ -163,12 +176,32 @@ func (b *Backend) page(ctx context.Context, room id.RoomID, before string) ([]co
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) < pageSize && !more && b.client != nil {
-		if err := b.paginate(ctx, room, pageSize-len(rows)); err != nil {
-			debuglog.Cache("matrix paginate: room=%s: %v", room, err)
+	if b.client != nil {
+		budget := serverPages
+		for budget > 0 {
+			g, ok, err := b.crossedGap(ctx, room, rows, more, before)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				break
+			}
+			budget--
+			if err := b.fillGap(ctx, room, g); err != nil {
+				debuglog.Cache("matrix fill gap: room=%s gap=%d: %v", room, g.ID, err)
+				break
+			}
+			if rows, more, err = b.storedRows(ctx, room, before, pageSize); err != nil {
+				return nil, err
+			}
 		}
-		if rows, _, err = b.storedRows(ctx, room, before, pageSize); err != nil {
-			return nil, err
+		if len(rows) < pageSize && !more && budget > 0 {
+			if err := b.paginate(ctx, room, pageSize-len(rows), budget); err != nil {
+				debuglog.Cache("matrix paginate: room=%s: %v", room, err)
+			}
+			if rows, _, err = b.storedRows(ctx, room, before, pageSize); err != nil {
+				return nil, err
+			}
 		}
 	}
 	items, err := b.items(ctx, room, rows)
@@ -176,6 +209,54 @@ func (b *Backend) page(ctx context.Context, room id.RoomID, before string) ([]co
 		items = []core.MessageItem{}
 	}
 	return items, err
+}
+
+// crossedGap returns the newest gap of room inside the page rows (read
+// before before, with more from storedRows); see the top of this file.
+func (b *Backend) crossedGap(ctx context.Context, room id.RoomID, rows []store.Event, more bool, before string) (store.Gap, bool, error) {
+	gaps, err := b.d.Store.Gaps(ctx, room)
+	if err != nil {
+		return store.Gap{}, false, err
+	}
+	lower := ""
+	if more && len(rows) > 0 {
+		lower = rows[0].TS
+	}
+	for i := len(gaps) - 1; i >= 0; i-- { // newest after_ts first
+		g := gaps[i]
+		if g.AfterTS > lower && (before == "" || g.AfterTS <= before) {
+			return g, true, nil
+		}
+	}
+	return store.Gap{}, false, nil
+}
+
+// fillGap pages back once from gap g's prev_batch and hands the page to
+// the room model, which fills the hole and removes or moves the gap. A
+// page that reaches the room's start also ends paging back.
+func (b *Backend) fillGap(ctx context.Context, room id.RoomID, g store.Gap) error {
+	l := b.pageLock(room)
+	l.Lock()
+	defer l.Unlock()
+	if _, ok, err := b.d.Store.Gap(ctx, g.ID); err != nil || !ok {
+		return err // another fetch filled it meanwhile
+	}
+	resp, err := b.client.Messages(ctx, room, g.PrevBatch, "", mautrix.DirectionBackward, lazyMembers, serverPage)
+	if err != nil {
+		return err
+	}
+	next := resp.End
+	if len(resp.Chunk) == 0 {
+		next = ""
+	}
+	b.prepareAll(ctx, room, resp.Chunk, resp.State)
+	if _, err := b.rooms.FillGap(ctx, room, g.ID, resp.Chunk, resp.State, next, false); err != nil {
+		return err
+	}
+	if next == "" {
+		_, err = b.remember(ctx, room, "")
+	}
+	return err
 }
 
 // storedRows returns up to n of room's channel rows before before ("" for
@@ -253,10 +334,10 @@ func (b *Backend) oldestEvent(ctx context.Context, room id.RoomID) (store.Event,
 }
 
 // backTokenFor returns where paging back in room continues: the token
-// remembered for the current oldest stored event; else the prev_batch of
-// a gap recorded at (or before) it, as a limited first /sync leaves;
-// else, from /context of the oldest event, the token before it. A room
-// with nothing stored pages from the live end ("").
+// remembered for the current oldest stored event, else, from /context of
+// that event, the token before it. A room with nothing stored pages from
+// the live end (""). A gap at the oldest event (a limited first /sync)
+// is not used here: page fills it through FillGap first.
 func (b *Backend) backTokenFor(ctx context.Context, room id.RoomID) (backToken, error) {
 	oldest, ok, err := b.oldestEvent(ctx, room)
 	if err != nil {
@@ -273,15 +354,6 @@ func (b *Backend) backTokenFor(ctx context.Context, room id.RoomID) (backToken, 
 	}
 	if known && t.Oldest == oldest.TS {
 		return t, nil
-	}
-	gaps, err := b.d.Store.Gaps(ctx, room)
-	if err != nil {
-		return backToken{}, err
-	}
-	for i := len(gaps) - 1; i >= 0; i-- {
-		if gaps[i].AfterTS <= oldest.TS {
-			return backToken{Oldest: oldest.TS, Token: gaps[i].PrevBatch}, nil
-		}
 	}
 	resp, err := b.client.Context(ctx, room, oldest.ID, lazyMembers, 2)
 	if err != nil {
@@ -311,12 +383,12 @@ func (b *Backend) remember(ctx context.Context, room id.RoomID, token string) (b
 var lazyMembers = &mautrix.FilterPart{LazyLoadMembers: true}
 
 // paginate pages back in room until about want more channel rows are
-// stored, the history start is reached, or serverPages requests are made.
-func (b *Backend) paginate(ctx context.Context, room id.RoomID, want int) error {
+// stored, the history start is reached, or budget requests are made.
+func (b *Backend) paginate(ctx context.Context, room id.RoomID, want, budget int) error {
 	l := b.pageLock(room)
 	l.Lock()
 	defer l.Unlock()
-	for range serverPages {
+	for range budget {
 		t, err := b.backTokenFor(ctx, room)
 		if err != nil || t.Done {
 			return err
@@ -347,44 +419,25 @@ func (b *Backend) paginate(ctx context.Context, room id.RoomID, want int) error 
 	return nil
 }
 
-// backfillOlder is backfill for events that need not be older than the
-// stored timeline (a thread's replies, a /context window). Backfill mints
-// TS values before the room's oldest, so an event newer than the oldest
-// stored one would get a TS that sorts it before older messages, and a TS
-// never changes. Such events are left out until the room model can place
-// an event between stored ones; events that already have a TS pass.
-func (b *Backend) backfillOlder(ctx context.Context, room id.RoomID, evs, state []*event.Event) error {
-	oldest, ok, err := b.oldestEvent(ctx, room)
-	if err != nil {
-		return err
-	}
-	if ok {
-		evs = slices.DeleteFunc(slices.Clone(evs), func(e *event.Event) bool {
-			if e.Timestamp < oldest.OriginServerTS {
-				return false
-			}
-			_, mapped, err := b.d.IDs.TS(ctx, room, e.ID)
-			return err != nil || !mapped
-		})
-	}
-	return b.backfill(ctx, room, evs, state)
-}
-
-// backfill prepares fetched events (newest first, all older than the
-// stored timeline, as paging back returns them) and hands them to the
-// room model.
+// backfill prepares fetched events (in the orders rooms.Model.Backfill
+// documents) and hands them to the room model.
 func (b *Backend) backfill(ctx context.Context, room id.RoomID, evs, state []*event.Event) error {
 	if len(evs) == 0 {
 		return nil
 	}
+	b.prepareAll(ctx, room, evs, state)
+	_, err := b.rooms.Backfill(ctx, room, evs, state)
+	return err
+}
+
+// prepareAll prepares a fetched page's events and state in place.
+func (b *Backend) prepareAll(ctx context.Context, room id.RoomID, evs, state []*event.Event) {
 	for i, e := range evs {
 		evs[i] = b.prepare(ctx, room, e, true)
 	}
 	for i, e := range state {
 		state[i] = b.prepare(ctx, room, e, false)
 	}
-	_, err := b.rooms.Backfill(ctx, room, evs, state)
-	return err
 }
 
 // prepare gives a fetched event what /sync's events have: its room, its
@@ -445,7 +498,7 @@ func (b *Backend) around(ctx context.Context, room id.RoomID, ts string) ([]core
 		slices.Reverse(evs) // events_after is oldest first; Backfill takes newest first
 		evs = append(evs, resp.Event)
 		evs = append(evs, resp.EventsBefore...)
-		if err := b.backfillOlder(ctx, room, evs, resp.State); err != nil {
+		if err := b.backfill(ctx, room, evs, resp.State); err != nil {
 			return nil, err
 		}
 	}
@@ -542,7 +595,7 @@ func (b *Backend) threadItems(ctx context.Context, room id.RoomID, root id.Event
 
 // fetchThread is ThreadService.Fetch: the thread's replies from the
 // server (/relations, m.thread, newest first, which is Backfill's order),
-// stored through Backfill as far as backfillOlder lets them, then read
+// stored through Backfill (which places them by origin time), then read
 // from the store. Edits and reactions of replies come only from /sync.
 func (b *Backend) fetchThread(alias, ts string) core.Msg {
 	out := ui.ThreadRepliesLoadedMsg{ThreadTS: ts}
@@ -589,7 +642,7 @@ func (b *Backend) fetchThreadEvents(ctx context.Context, room id.RoomID, root id
 		}
 		evs = append(evs, e) // the root is older than its replies
 	}
-	return b.backfillOlder(ctx, room, evs, nil)
+	return b.backfill(ctx, room, evs, nil)
 }
 
 // threadCache is ThreadService.CacheRead: the stored root, then its
@@ -633,10 +686,10 @@ type threadStat struct {
 // listThreads is ThreadService.ListFetch: the threads the account is in
 // (started or replied to), newest reply first, from the store. Every
 // threadSweepEvery it first asks the server for each room's threads the
-// account participated in (/threads) and keeps the reply counts it
-// reports, which cover replies the store lacks. Roots the store lacks are
-// not stored: one stored out of its timeline would leave its replies
-// unplaceable (see backfillOlder).
+// account participated in (/threads): it keeps the reply counts and
+// participation the server reports, which cover replies the store lacks,
+// and stores each root the store lacks with its latest reply through
+// Backfill, so threads older than the stored timeline are listed too.
 func (b *Backend) listThreads(team string) core.Msg {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
@@ -657,7 +710,10 @@ func (b *Backend) listThreads(team string) core.Msg {
 			continue
 		}
 		rootRow, ok, err := b.d.Store.GetEvent(ctx, st.room, st.root)
-		if err != nil || !ok || (rootRow.Sender != b.self && !st.participant) {
+		b.mu.Lock()
+		joined := b.threadJoined[st.root]
+		b.mu.Unlock()
+		if err != nil || !ok || (rootRow.Sender != b.self && !st.participant && !joined) {
 			continue
 		}
 		parent, ok := b.item(ctx, st.room, rootRow, related{}, res)
@@ -771,11 +827,30 @@ func (b *Backend) sweepRoom(ctx context.Context, room id.RoomID) error {
 	if err != nil {
 		return err
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	for _, root := range resp.Chunk {
+		var latest *event.Event
 		if agg := root.Unsigned.Relations; agg != nil && agg.Thread != nil {
+			b.mu.Lock()
 			b.threadCounts[root.ID] = agg.Thread.Count
+			b.threadJoined[root.ID] = true // include=participated
+			b.mu.Unlock()
+			latest = agg.Thread.LatestEvent
+		}
+		_, stored, err := b.d.Store.GetEvent(ctx, room, root.ID)
+		if err != nil {
+			return err
+		}
+		if stored {
+			continue
+		}
+		// One thread per call, newest first: Backfill places events
+		// after one that went below the stored timeline below it too.
+		evs := []*event.Event{root}
+		if latest != nil && latest.ID != "" {
+			evs = []*event.Event{latest, root}
+		}
+		if err := b.backfill(ctx, room, evs, nil); err != nil {
+			return err
 		}
 	}
 	return nil

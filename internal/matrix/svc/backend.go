@@ -11,10 +11,12 @@ import (
 
 	"github.com/gammons/slk/internal/matrix/mxfmt"
 	"github.com/gammons/slk/internal/matrix/rooms"
+	"github.com/gammons/slk/internal/matrix/session"
 )
 
 // roomSource is what the backend uses of the room model: exactly these
-// methods of *rooms.Model. Tests fake it over a real store.
+// methods of *rooms.Model. Tests use a real model, wrapped where they
+// record what the backend hands it.
 type roomSource interface {
 	Room(alias string) (rooms.Room, bool)
 	RoomByID(room id.RoomID) (rooms.Room, bool)
@@ -22,6 +24,9 @@ type roomSource interface {
 	DisplayName(room id.RoomID, user id.UserID) string
 	ThreadReceipt(room id.RoomID, thread id.EventID) (rooms.Receipt, bool)
 	Backfill(ctx context.Context, room id.RoomID, events []*event.Event, state []*event.Event) (rooms.Changes, error)
+	FillGap(ctx context.Context, room id.RoomID, gapID int64, events, state []*event.Event, nextPrevBatch string, complete bool) (rooms.Changes, error)
+	Apply(ctx context.Context, b session.SyncBatch) (rooms.Changes, error)
+	ApplyDecrypted(ctx context.Context, d session.LateDecrypted) (rooms.Changes, error)
 	Resolver() mxfmt.Resolver
 }
 
@@ -54,9 +59,14 @@ type Backend struct {
 	// SyncedAt.
 	synced map[string]time.Time
 	// threadSweep is when ListFetch last asked the server for thread
-	// roots; threadCounts the reply counts it reported, by root.
+	// roots; threadCounts the reply counts it reported, by root, and
+	// threadJoined the roots of threads it said the account is in.
 	threadSweep  time.Time
 	threadCounts map[id.EventID]int
+	threadJoined map[id.EventID]bool
+
+	// live is the live side's state (live.go).
+	live *liveState
 }
 
 // New returns the backend for an account.
@@ -78,6 +88,8 @@ func newBackend(d Deps, rs roomSource, cli *mautrix.Client, self id.UserID) *Bac
 		paging:       map[id.RoomID]*sync.Mutex{},
 		synced:       map[string]time.Time{},
 		threadCounts: map[id.EventID]int{},
+		threadJoined: map[id.EventID]bool{},
+		live:         newLiveState(),
 	}
 	if b.tsFormat == "" {
 		b.tsFormat = defaultTimestampFormat
