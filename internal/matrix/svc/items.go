@@ -49,6 +49,8 @@ import (
 //     message, and a system notice subtype would drop the sender.
 //   - Reactions are the non-redacted m.annotation events, one per sender
 //     and key, keyed by Slack shortcode (reactionName).
+//   - A broadcast reply (isBroadcast) is Subtype "thread_broadcast" and a
+//     channel row too; its room copy (isBroadcastCopy) is no row at all.
 //   - A root's ThreadTS is its own TS once it has replies, a reply's its
 //     root's; ReplyCount and ReplyUsers count the stored replies (bundled
 //     aggregations are not stored).
@@ -60,7 +62,11 @@ const (
 )
 
 // isRow reports whether e is a message row (of a channel or a thread).
+// The room copy of a broadcast reply is not one: the reply shows instead.
 func isRow(e store.Event) bool {
+	if isBroadcastCopy(e) {
+		return false
+	}
 	switch e.Type {
 	case event.EventMessage.Type, event.EventSticker.Type, event.EventEncrypted.Type:
 	default:
@@ -73,13 +79,41 @@ func isRow(e store.Event) bool {
 	return true
 }
 
+// A thread reply sent with "also send to channel" is two events, because
+// Matrix has no thread_broadcast: the reply, marked broadcastKey, and a
+// plain room message for other clients, marked broadcastCopyKey with the
+// reply's event ID. slk shows the reply in the thread and in the channel,
+// as Slack shows a thread_broadcast, and hides the copy.
+const (
+	broadcastKey     = "org.slk.broadcast"
+	broadcastCopyKey = "org.slk.broadcast_of"
+)
+
+// contentFlag reports whether e's content has key set to a non-empty,
+// non-false value.
+func contentFlag(e store.Event, key string) bool {
+	var c map[string]json.RawMessage
+	if json.Unmarshal(e.Content, &c) != nil {
+		return false
+	}
+	v, ok := c[key]
+	return ok && string(v) != "false" && string(v) != "null" && string(v) != `""`
+}
+
+// isBroadcast reports whether e is a thread reply also sent to the channel.
+func isBroadcast(e store.Event) bool { return inThread(e) && contentFlag(e, broadcastKey) }
+
+// isBroadcastCopy reports whether e is the room copy of a broadcast reply.
+func isBroadcastCopy(e store.Event) bool { return !inThread(e) && contentFlag(e, broadcastCopyKey) }
+
 // inThread reports whether e is a thread reply.
 func inThread(e store.Event) bool {
 	return e.ThreadRoot != "" || event.RelationType(e.RelType) == event.RelThread
 }
 
-// isMainRow reports whether e is a row of the channel's own timeline.
-func isMainRow(e store.Event) bool { return isRow(e) && !inThread(e) }
+// isMainRow reports whether e is a row of the channel's own timeline: a
+// message not in a thread, or a broadcast reply.
+func isMainRow(e store.Event) bool { return isRow(e) && (!inThread(e) || isBroadcast(e)) }
 
 // threadRootOf returns the root of e's thread, "" if none.
 func threadRootOf(e store.Event) id.EventID {
@@ -200,6 +234,9 @@ func (b *Backend) item(ctx context.Context, room id.RoomID, r store.Event, rel r
 	if root := threadRootOf(r); root != "" {
 		if ts, ok, err := b.d.IDs.TS(ctx, room, root); err == nil && ok {
 			it.ThreadTS = ts
+		}
+		if isBroadcast(r) {
+			it.Subtype = "thread_broadcast"
 		}
 	}
 	if len(replies) > 0 {
