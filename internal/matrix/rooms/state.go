@@ -38,11 +38,9 @@ type member struct {
 // need no lock on it.
 //
 // row is what the store holds; the other fields are the inputs the row's
-// name and kind are computed from. Of those, members and the join rule are
-// also in mautrix's state store on the same database (loaded by New), the
-// edges in slkmx_room_space_parents, receipts in slkmx_receipts; the
-// explicit name, heroes and member counts are only in memory (see New for
-// how a restart restores them).
+// name and kind are computed from, which saveInputs copies into the row
+// (members are in mautrix's state store on the same database instead),
+// and the read state's, from slkmx_receipts and slkmx_events.
 type room struct {
 	row   store.Room
 	alias string
@@ -99,6 +97,52 @@ func (r *room) clone() *room {
 	c.members = maps.Clone(r.members)
 	c.receipts = maps.Clone(r.receipts)
 	return &c
+}
+
+// saveInputs copies the name and kind inputs into the row, which stores
+// them.
+func (r *room) saveInputs() {
+	row := &r.row
+	row.InputsSaved = true
+	row.HasNameEvent, row.NameEvent = r.explicitName != nil, ""
+	if r.explicitName != nil {
+		row.NameEvent = *r.explicitName
+	}
+	row.Heroes = nilIfEmpty(r.heroes)
+	row.HaveMemberCounts, row.JoinedMemberCount, row.InvitedMemberCount = r.haveCounts, r.joinedN, r.invitedN
+	if !r.haveCounts {
+		row.JoinedMemberCount, row.InvitedMemberCount = 0, 0
+	}
+	row.JoinRule = string(r.joinRule)
+	row.DirectUsers = nil
+	if r.direct {
+		row.DirectUsers = nilIfEmpty(r.directUsers)
+	}
+}
+
+// loadInputs sets the name and kind inputs from a row that has them
+// (InputsSaved).
+func (r *room) loadInputs() {
+	row := r.row
+	r.explicitName = nil
+	if row.HasNameEvent {
+		n := row.NameEvent
+		r.explicitName = &n
+	}
+	r.heroes = slices.Clone(row.Heroes)
+	r.haveCounts, r.joinedN, r.invitedN = row.HaveMemberCounts, row.JoinedMemberCount, row.InvitedMemberCount
+	r.joinRule = event.JoinRule(row.JoinRule)
+	r.direct, r.directUsers = len(row.DirectUsers) > 0, slices.Clone(row.DirectUsers)
+	if row.JoinState == store.Invited && row.Kind == store.RoomDM {
+		r.inviteDirect, r.inviter = true, row.DMUserID
+	}
+}
+
+func nilIfEmpty(us []id.UserID) []id.UserID {
+	if len(us) == 0 {
+		return nil
+	}
+	return slices.Clone(us)
 }
 
 // nameLookup resolves display names while computing room names.

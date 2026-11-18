@@ -1,4 +1,4 @@
--- v0 -> v1: Latest revision
+-- v0 -> v2: Latest revision
 -- The /sync position. One row (id 0), created here so reads never miss.
 CREATE TABLE slkmx_sync_state (
 	id         INTEGER PRIMARY KEY CHECK (id = 0),
@@ -8,7 +8,11 @@ CREATE TABLE slkmx_sync_state (
 INSERT INTO slkmx_sync_state (id) VALUES (0);
 
 -- Rooms the account knows about. last_event_ts is the slk TS of the newest
--- event ("%010d.%06d"), which sorts across rooms too.
+-- event ("%010d.%06d"), which sorts across rooms too. The columns from
+-- inputs_saved on are what the room model computes name and kind from
+-- (m.room.name, the sync summary, the join rule, the m.direct users; the
+-- lists as JSON arrays); inputs_saved is 0 on rows written before they
+-- existed (v1).
 CREATE TABLE slkmx_rooms (
 	room_id            TEXT    PRIMARY KEY,
 	canonical_alias    TEXT    NOT NULL DEFAULT '',
@@ -24,7 +28,16 @@ CREATE TABLE slkmx_rooms (
 	highlight_count    INTEGER NOT NULL DEFAULT 0,
 	notification_count INTEGER NOT NULL DEFAULT 0,
 	marked_unread      INTEGER NOT NULL DEFAULT 0,
-	updated_at         INTEGER NOT NULL DEFAULT 0
+	updated_at         INTEGER NOT NULL DEFAULT 0,
+	inputs_saved         INTEGER NOT NULL DEFAULT 0,
+	has_name_event       INTEGER NOT NULL DEFAULT 0,
+	name_event           TEXT    NOT NULL DEFAULT '',
+	heroes               TEXT    NOT NULL DEFAULT '[]',
+	have_member_counts   INTEGER NOT NULL DEFAULT 0,
+	joined_member_count  INTEGER NOT NULL DEFAULT 0,
+	invited_member_count INTEGER NOT NULL DEFAULT 0,
+	join_rule            TEXT    NOT NULL DEFAULT '',
+	direct_users         TEXT    NOT NULL DEFAULT '[]'
 );
 
 -- m.space.child edges: room_id is in space space_id, ordered by

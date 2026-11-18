@@ -61,6 +61,7 @@ package rooms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -116,12 +117,13 @@ type Model struct {
 
 // New loads the account's rooms from st. self is the account's user ID.
 //
-// Members and join rules are read from mautrix's state store on st.DB,
-// which the model also writes (the session's syncer writes the same rows).
-// The explicit name, heroes and member counts are not stored, so a
-// restarted model treats a room's stored name as its m.room.name when it
-// differs from the name it would compute, and computes heroes from the
-// stored members until the next summary.
+// Members are read from mautrix's state store on st.DB, which the model
+// also writes (the session's syncer writes the same rows). Everything else
+// a room's name and kind are computed from (m.room.name, the sync
+// summary's heroes and member counts, the join rule, the m.direct users)
+// is in the room's row, so a restarted model computes what the old one
+// did. Rows from before those columns existed (store schema v1) restore
+// what they can (see loadLegacyInputs) until a batch touches them.
 func New(ctx context.Context, st *store.Store, ids *ident.Mapper, self id.UserID) (*Model, error) {
 	ss := sqlstatestore.NewSQLStateStore(st.DB, nil, false)
 	if err := ss.Upgrade(ctx); err != nil {
@@ -175,24 +177,10 @@ func (m *Model) load(ctx context.Context) error {
 			}
 			r.members[u] = member{name: mem.Displayname, membership: mem.Membership}
 		}
-		if jr, err := m.ss.GetJoinRules(ctx, row.ID); err != nil {
+		if row.InputsSaved {
+			r.loadInputs()
+		} else if err := m.loadLegacyInputs(ctx, r); err != nil {
 			return err
-		} else if jr != nil {
-			r.joinRule = jr.JoinRule
-		} else if row.Kind == store.RoomChannel {
-			r.joinRule = event.JoinRulePublic
-		}
-		switch row.Kind {
-		case store.RoomDM:
-			r.direct = true
-			if row.DMUserID != "" {
-				r.directUsers = []id.UserID{row.DMUserID}
-			}
-		case store.RoomGroupDM:
-			r.direct, r.minOthers = true, 2
-		}
-		if row.JoinState == store.Invited && row.Kind == store.RoomDM {
-			r.direct, r.directUsers, r.inviteDirect, r.inviter = false, nil, true, row.DMUserID
 		}
 		if r.candTS, err = m.st.LatestUnreadCandidate(ctx, row.ID, m.self); err != nil {
 			return err
@@ -216,11 +204,44 @@ func (m *Model) load(ctx context.Context) error {
 	m.global = buildGlobal(m.rooms)
 	dn := func(rid id.RoomID, user id.UserID) string { return displayName(m.rooms[rid], m.global, user) }
 	for _, r := range m.rooms {
+		if r.row.InputsSaved {
+			continue
+		}
 		kind, dmUser := r.kind(m.self)
 		if computed := r.name(m.self, kind, dmUser, dn); r.row.Name != "" && r.row.Name != computed {
 			name := r.row.Name
 			r.explicitName = &name
 		}
+	}
+	return nil
+}
+
+// loadLegacyInputs restores what it can of the name and kind inputs of a
+// row written before they were stored (schema v1): the join rule from
+// mautrix's state store, m.direct from the stored kind. load then treats
+// a stored name that differs from the computed one as the room's
+// m.room.name. The row has its inputs from the next batch that touches
+// the room.
+func (m *Model) loadLegacyInputs(ctx context.Context, r *room) error {
+	row := r.row
+	if jr, err := m.ss.GetJoinRules(ctx, row.ID); err != nil {
+		return err
+	} else if jr != nil {
+		r.joinRule = jr.JoinRule
+	} else if row.Kind == store.RoomChannel {
+		r.joinRule = event.JoinRulePublic
+	}
+	switch row.Kind {
+	case store.RoomDM:
+		r.direct = true
+		if row.DMUserID != "" {
+			r.directUsers = []id.UserID{row.DMUserID}
+		}
+	case store.RoomGroupDM:
+		r.direct, r.minOthers = true, 2
+	}
+	if row.JoinState == store.Invited && row.Kind == store.RoomDM {
+		r.direct, r.directUsers, r.inviteDirect, r.inviter = false, nil, true, row.DMUserID
 	}
 	return nil
 }
@@ -305,9 +326,19 @@ func (m *Model) ApplyDecrypted(ctx context.Context, d session.LateDecrypted) (Ch
 	return b.finish()
 }
 
-// Backfill takes in events fetched by paging back in room (newest first, as
-// /messages returns them with dir=b), minting TS values before the room's
-// oldest. state is the response's state (member events for the senders).
+// Backfill takes in events fetched from the server outside /sync: pages
+// back (newest first, as /messages returns them with dir=b), a thread's
+// replies from /relations (newest first, the root after them), or a
+// /context window (events_after reversed, the event, events_before).
+// state is the response's state (member events for the senders).
+//
+// Each event is placed by where it belongs: one older than the room's
+// oldest TS gets a TS before it (ident.TSForBackfill), and so does every
+// event after it in events, which are older still; any other event is
+// placed among the stored ones by its origin time (ident.TSForInsert).
+// Events already mapped keep their TS. Changes report them with Live
+// false. Events filling a gap go through FillGap instead, which orders
+// them by the page rather than by origin time.
 //
 // Member events in state name senders the model has no member event for;
 // they never replace a newer one. State events among events are history
@@ -320,27 +351,30 @@ func (m *Model) Backfill(ctx context.Context, room id.RoomID, events []*event.Ev
 	if err != nil {
 		return Changes{}, err
 	}
-	for _, evt := range state {
-		if evt.StateKey == nil || evt.Type.Type != event.StateMember.Type {
-			continue
-		}
-		if _, ok := r.members[id.UserID(*evt.StateKey)]; ok {
-			continue
-		}
-		if err := b.applyMember(r, id.UserID(*evt.StateKey), evt); err != nil {
-			return Changes{}, err
-		}
+	if err := b.backfillState(r, state); err != nil {
+		return Changes{}, err
 	}
+	oldest, _, haveBounds, err := m.st.RoomBounds(ctx, room)
+	if err != nil {
+		return Changes{}, err
+	}
+	below := false // an event of this page went before the oldest
 	for _, evt := range events {
-		if evt.ID == "" || evt.StateKey != nil {
+		if !storable(evt) {
 			continue
 		}
-		switch evt.Type.Type {
-		case typeMessage, typeSticker, typeEncrypted, typeReaction:
+		origin := time.UnixMilli(evt.Timestamp)
+		ts, mapped, err := m.ids.TS(ctx, room, evt.ID)
+		switch {
+		case err != nil:
+		case mapped:
+			below = below || (haveBounds && ts <= oldest)
+		case !haveBounds || below || naturalTS(origin) < oldest:
+			ts, err = m.ids.TSForBackfill(ctx, room, evt.ID, origin)
+			below = true
 		default:
-			continue
+			ts, err = m.ids.TSForInsert(ctx, room, evt.ID, origin)
 		}
-		ts, err := m.ids.TSForBackfill(ctx, room, evt.ID, time.UnixMilli(evt.Timestamp))
 		if err != nil {
 			return Changes{}, err
 		}
@@ -349,6 +383,127 @@ func (m *Model) Backfill(ctx context.Context, room id.RoomID, events []*event.Ev
 		}
 	}
 	return b.finish()
+}
+
+// FillGap takes in one page of events fetched for gap gapID of room
+// (store.Gaps): /messages from the gap's prev_batch with dir=b, so newest
+// first, with nextPrevBatch the response's end ("" when it has none) and
+// state its state. Each new event gets a TS strictly between the event
+// after it (the gap's after_ts for the first) and the newest TS mapped
+// before that (ident.TSForInsertBetween), so the page's order is the
+// timeline order whatever the origin times; only when no TS is free
+// there is an event placed by origin time (ident.TSForInsert). Events
+// already mapped keep their TS. Changes report the new events with Live
+// false.
+//
+// Then the gap is removed when the page completes it, otherwise moved:
+// its prev_batch becomes nextPrevBatch and its after_ts the page's oldest
+// TS, for the next page. A caller sets complete when it knows the gap is
+// closed (it fetched up to a known event, or the server's history ended);
+// FillGap also treats the page as complete when nextPrevBatch is "" or
+// when the page holds an event that was already stored before the gap's
+// after_ts (the page reached the stored timeline below the gap). A
+// caller that pages /messages from prev_batch can therefore pass
+// complete = false and let FillGap decide.
+func (m *Model) FillGap(ctx context.Context, room id.RoomID, gapID int64, events, state []*event.Event, nextPrevBatch string, complete bool) (Changes, error) {
+	m.wmu.Lock()
+	defer m.wmu.Unlock()
+	g, ok, err := m.st.Gap(ctx, gapID)
+	if err != nil {
+		return Changes{}, err
+	}
+	if !ok || g.RoomID != room {
+		return Changes{}, fmt.Errorf("rooms: no gap %d in %s", gapID, room)
+	}
+	b := m.newBatch(ctx)
+	r, err := b.room(room)
+	if err != nil {
+		return Changes{}, err
+	}
+	if err := b.backfillState(r, state); err != nil {
+		return Changes{}, err
+	}
+	before := g.AfterTS
+	for _, evt := range events {
+		if !storable(evt) {
+			continue
+		}
+		origin := time.UnixMilli(evt.Timestamp)
+		ts, mapped, err := m.ids.TS(ctx, room, evt.ID)
+		if err != nil {
+			return Changes{}, err
+		}
+		if mapped {
+			if _, stored, err := m.st.GetEvent(ctx, room, evt.ID); err != nil {
+				return Changes{}, err
+			} else if stored && ts < g.AfterTS {
+				complete = true
+			}
+			before = min(before, ts)
+		} else {
+			after, _, err := m.st.TSBefore(ctx, room, before)
+			if err != nil {
+				return Changes{}, err
+			}
+			ts, err = m.ids.TSForInsertBetween(ctx, room, evt.ID, origin, after, before)
+			switch {
+			case errors.Is(err, ident.ErrNoRoom):
+				ts, err = m.ids.TSForInsert(ctx, room, evt.ID, origin)
+			case err == nil:
+				before = ts
+			}
+			if err != nil {
+				return Changes{}, err
+			}
+		}
+		if err := b.storeEvent(r, evt, ts, false); err != nil {
+			return Changes{}, fmt.Errorf("rooms: gap event %s: %w", evt.ID, err)
+		}
+	}
+	if complete || nextPrevBatch == "" {
+		err = m.st.RemoveGap(ctx, gapID)
+	} else {
+		err = m.st.UpdateGap(ctx, gapID, nextPrevBatch, before)
+	}
+	if err != nil {
+		return Changes{}, err
+	}
+	return b.finish()
+}
+
+// storable reports whether evt is a timeline event the model stores.
+func storable(evt *event.Event) bool {
+	if evt.ID == "" || evt.StateKey != nil {
+		return false
+	}
+	switch evt.Type.Type {
+	case typeMessage, typeSticker, typeEncrypted, typeReaction:
+		return true
+	}
+	return false
+}
+
+// naturalTS is the TS of origin without a tiebreak, as ident formats it.
+func naturalTS(origin time.Time) string {
+	ms := max(origin.UnixMilli(), 0)
+	return fmt.Sprintf("%010d.%06d", ms/1000, ms%1000*1000)
+}
+
+// backfillState applies the member events of a fetched page's state for
+// senders the model has no member event for.
+func (b *batch) backfillState(r *room, state []*event.Event) error {
+	for _, evt := range state {
+		if evt.StateKey == nil || evt.Type.Type != event.StateMember.Type {
+			continue
+		}
+		if _, ok := r.members[id.UserID(*evt.StateKey)]; ok {
+			continue
+		}
+		if err := b.applyMember(r, id.UserID(*evt.StateKey), evt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Changes is what one Apply, ApplyDecrypted or Backfill changed. svc turns
