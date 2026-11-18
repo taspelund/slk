@@ -3,11 +3,19 @@
 BINARY=slk
 BUILD_DIR=bin
 
+# Stamp the build the way the release builds are (.goreleaser.yaml), so
+# slk --version names it: the nearest tag plus commits since, then the
+# commit and the build time.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
+COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS  = -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
 build:
-	go build -ldflags="-s -w" -trimpath -o $(BUILD_DIR)/$(BINARY) ./cmd/slk
+	go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/$(BINARY) ./cmd/slk
 
 install:
-	go install -ldflags="-s -w" -trimpath ./cmd/slk
+	go install -ldflags="$(LDFLAGS)" -trimpath ./cmd/slk
 
 test:
 	go test ./... -v -race
