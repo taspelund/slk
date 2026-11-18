@@ -28,6 +28,7 @@ type roomSource interface {
 	Apply(ctx context.Context, b session.SyncBatch) (rooms.Changes, error)
 	ApplyDecrypted(ctx context.Context, d session.LateDecrypted) (rooms.Changes, error)
 	Resolver() mxfmt.Resolver
+	Workspaces() []rooms.Workspace
 }
 
 var _ roomSource = (*rooms.Model)(nil)
@@ -68,6 +69,9 @@ type Backend struct {
 	// process without telling the server: read-only mode's MarkRead.
 	localRead map[string]string
 
+	// ws is the account's workspaces (workspaces.go).
+	ws workspaces
+
 	// live is the live side's state (live.go); write, files and
 	// profile are the other work packages' state, each defined and
 	// built in that package's file.
@@ -103,6 +107,7 @@ func newBackend(d Deps, rs roomSource, cli *mautrix.Client, self id.UserID) *Bac
 		files:        newFilesState(),
 		profile:      newProfileState(),
 	}
+	b.ws.sections = map[string]*sectionsProvider{}
 	if b.tsFormat == "" {
 		b.tsFormat = defaultTimestampFormat
 	}

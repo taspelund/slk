@@ -38,17 +38,20 @@ import (
 )
 
 // Deps are what a Backend needs. Account is the account name given to
-// --matrix; it names the workspace in the rail. Dir is the account's
-// directory (session.json, matrix.db), where WP-Media keeps its file
-// cache. ReadOnly leaves out every port that changes the account (sends,
-// edits, reactions, read receipts, joins, presence, typing, uploads), for
-// trying an account without touching it. TimestampFormat is the
+// --matrix; it titles notifications. Dir is the account's directory
+// (session.json, matrix.db), where WP-Media keeps its file cache.
+// ReadOnly leaves out every port that changes the account (sends, edits,
+// reactions, read receipts, joins, presence, typing, uploads), for trying
+// an account without touching it; rooms it opens read as read in this
+// process only (markReadLocal). Style is the theme and sidebar width the
+// config gives a workspace by team ID (nil for none). TimestampFormat is the
 // Go time layout of a message's header time, [appearance]
 // timestamp_format ("" for its default, "3:04 PM").
 type Deps struct {
 	Account         string
 	Dir             string
 	ReadOnly        bool
+	Style           func(team string) (theme string, sidebarWidth int)
 	Session         *session.Session
 	Store           *store.Store
 	IDs             *ident.Mapper

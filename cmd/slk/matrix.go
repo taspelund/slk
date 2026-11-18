@@ -33,7 +33,6 @@ import (
 	"github.com/gammons/slk/internal/ui/imgrender"
 	"github.com/gammons/slk/internal/ui/messages"
 	"github.com/gammons/slk/internal/ui/styles"
-	"github.com/gammons/slk/internal/ui/workspace"
 )
 
 // The Matrix backend's entry points, behind hidden flags while it is being
@@ -217,8 +216,11 @@ func runMatrix(account string, readOnly bool) error {
 		return err
 	}
 	b := svc.New(svc.Deps{
-		Dir:             dir,
-		ReadOnly:        readOnly,
+		Dir:      dir,
+		ReadOnly: readOnly,
+		Style: func(team string) (string, int) {
+			return cfg.ResolveTheme(team), cfg.ResolveWidth(team)
+		},
 		Account:         account,
 		Session:         sess,
 		Store:           st,
@@ -229,8 +231,10 @@ func runMatrix(account string, readOnly bool) error {
 
 	app := ui.NewApp()
 	applyUISettings(app, uiSettingsFromConfig(cfg))
-	app.SetLoadingWorkspaces([]string{account})
-	app.SetWorkspaces([]workspace.WorkspaceItem{{ID: b.TeamID(), Name: account, Initials: workspace.WorkspaceInitials(account)}})
+	// The rail is the account's workspaces (Direct Messages first, then
+	// one per top-level space), which StartupMsgs sends once the first
+	// sync is in; the loading overlay waits for the first of them.
+	app.SetLoadingWorkspaces([]string{rooms.HomeName})
 	b.Install(app)
 	b.SetNotifications(svc.Notifications{
 		Notifier:        notify.New(cfg.Notifications.Enabled, cfg.Notifications.NotifyCommand),
@@ -293,11 +297,6 @@ func runMatrix(account string, readOnly bool) error {
 			debuglog.General("matrix: startup: %v", err)
 		}
 		for _, m := range msgs {
-			if ready, ok := m.(ui.WorkspaceReadyMsg); ok {
-				ready.Theme = cfg.ResolveTheme(ready.TeamID)
-				ready.SidebarWidth = cfg.ResolveWidth(ready.TeamID)
-				m = ready
-			}
 			p.Send(m)
 		}
 		close(gate)

@@ -26,6 +26,7 @@ import (
 	"github.com/gammons/slk/internal/matrix/store"
 	"github.com/gammons/slk/internal/ui"
 	"github.com/gammons/slk/internal/ui/sidebar"
+	"github.com/gammons/slk/internal/ui/workspace"
 )
 
 const liveDM id.RoomID = "!dm:example.org"
@@ -312,26 +313,32 @@ func TestStartupMsgsAfterTheFirstSync(t *testing.T) {
 	}
 
 	snap := f.m.Snapshot()
-	ready, ok := msgs[0].(ui.WorkspaceReadyMsg)
-	if len(msgs) != 2 || !ok {
+	home := f.m.Workspaces()[0]
+	if len(msgs) != 3 || !reflect.DeepEqual(msgs[0], ui.WorkspacesSetMsg{Items: []workspace.WorkspaceItem{
+		{ID: f.b.TeamID(), Name: "Direct Messages", Initials: "DM"},
+	}}) {
 		t.Fatalf("StartupMsgs = %#v", msgs)
 	}
-	if msgs[1] != (ui.ConnectionStateMsg{State: 1}) {
-		t.Fatalf("connection = %#v", msgs[1])
+	ready, ok := msgs[1].(ui.WorkspaceReadyMsg)
+	if !ok {
+		t.Fatalf("StartupMsgs[1] = %#v", msgs[1])
+	}
+	if msgs[2] != (ui.ConnectionStateMsg{State: 1}) {
+		t.Fatalf("connection = %#v", msgs[2])
 	}
 	gen := f.roomAlias(general)
-	if ready.TeamID != f.b.TeamID() || ready.TeamName != "acct" || ready.UserID != f.userAlias(self) ||
+	if ready.TeamID != f.b.TeamID() || ready.TeamName != "Direct Messages" || ready.UserID != f.userAlias(self) ||
 		!ready.InitialActive || ready.LastChannelID != gen {
 		t.Fatalf("ready = %+v", ready)
 	}
-	if !reflect.DeepEqual(ready.Channels, snap.Channels) || !reflect.DeepEqual(ready.FinderItems, snap.Finder) ||
+	if !reflect.DeepEqual(ready.Channels, home.Channels) || !reflect.DeepEqual(ready.FinderItems, home.Finder) ||
 		!reflect.DeepEqual(ready.ChannelNames, snap.ChannelNames) || !reflect.DeepEqual(ready.UserNames, snap.UserNames) {
-		t.Fatalf("ready rows = %+v\nsnapshot %+v", ready, snap)
+		t.Fatalf("ready rows = %+v\nworkspace %+v", ready, home)
 	}
-	if len(ready.Channels) != 2 || ready.Channels[0].ID != gen || ready.Channels[1].Type != "dm" {
+	if len(ready.Channels) != 2 || ready.Channels[0].Type != "dm" || ready.Channels[1].ID != gen {
 		t.Fatalf("Channels = %+v", ready.Channels)
 	}
-	if p := ready.SectionsProvider; p == nil || !p.Ready() || !reflect.DeepEqual(p.OrderedSlackSections(), snap.Sections) {
+	if p := ready.SectionsProvider; p == nil || !p.Ready() || !reflect.DeepEqual(p.OrderedSlackSections(), home.Sections) {
 		t.Fatalf("SectionsProvider = %v", p)
 	}
 	// The maps are the UI's: writing them changes nothing the backend
@@ -358,7 +365,7 @@ func TestStartupWhenTheFirstSyncFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 2 || msgs[1] != (ui.ConnectionStateMsg{State: 2}) {
+	if len(msgs) != 3 || msgs[2] != (ui.ConnectionStateMsg{State: 2}) {
 		t.Fatalf("offline startup = %#v", msgs)
 	}
 	// The initial sync, once it comes, is told (it is not in the startup
@@ -591,7 +598,7 @@ func TestLiveRoomsAndNames(t *testing.T) {
 	jr := ljoin(resp, random)
 	jr.State.Events = []*event.Event{lstate(t, "m.room.name", "", bob, map[string]any{"name": "random"}), lmember(t, self, "Me")}
 	got := f.sync(resp)
-	snap := f.m.Snapshot()
+	snap := f.m.Workspaces()[0]
 	ra := f.roomAlias(random)
 	var item sidebar.ChannelItem
 	var finder core.ChannelFinderItem
@@ -629,6 +636,65 @@ func TestLiveRoomsAndNames(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// TestLiveSpacesAreWorkspaces: joining a space adds a rail workspace; a
+// message in a room of a workspace not on screen only lights the rail,
+// and once the UI switches there it arrives as a message.
+func TestLiveSpacesAreWorkspaces(t *testing.T) {
+	f := newLiveFixture(t)
+	f.startup(liveWorld(t))
+	const space, eng id.RoomID = "!space:example.org", "!eng:example.org"
+	resp := lsync()
+	ljoin(resp, space).State.Events = []*event.Event{
+		lstate(t, "m.room.create", "", bob, map[string]any{"type": "m.space"}),
+		lstate(t, "m.room.name", "", bob, map[string]any{"name": "Oxide"}),
+		lstate(t, "m.space.child", string(eng), bob, map[string]any{"via": []string{"example.org"}}),
+		lmember(t, self, "Me"),
+	}
+	ljoin(resp, eng).State.Events = []*event.Event{lstate(t, "m.room.name", "", bob, map[string]any{"name": "eng"}), lmember(t, self, "Me")}
+	got := f.sync(resp)
+	spaceTeam := "M" + f.roomAlias(space)
+	rail := ui.WorkspacesSetMsg{Items: []workspace.WorkspaceItem{
+		{ID: f.b.TeamID(), Name: "Direct Messages", Initials: "DM"},
+		{ID: spaceTeam, Name: "Oxide", Initials: workspace.WorkspaceInitials("Oxide")},
+	}}
+	if len(got) == 0 || !reflect.DeepEqual(got[0], rail) {
+		t.Fatalf("joining a space sent %#v", got)
+	}
+	ea := f.roomAlias(eng)
+	if !slices.ContainsFunc(got, func(m tea.Msg) bool {
+		o, ok := m.(ui.ConversationOpenedMsg)
+		return ok && o.TeamID == spaceTeam && o.Item.ID == ea
+	}) || slices.ContainsFunc(got, func(m tea.Msg) bool {
+		o, ok := m.(ui.ConversationOpenedMsg)
+		return ok && o.TeamID == f.b.TeamID() && o.Item.ID == ea
+	}) {
+		t.Fatalf("eng's row went to the wrong workspace: %#v", got)
+	}
+
+	// Direct Messages is on screen: a message in eng lights Oxide's dot.
+	resp = lsync()
+	ljoin(resp, eng).Timeline.Events = []*event.Event{ltxt(t, "$e1", bob, 5000, "standup?")}
+	f.expect("a message in a workspace not on screen", f.sync(resp),
+		ui.ReadStateChangedMsg{WorkspaceID: spaceTeam, ChannelID: ea})
+	if got := f.b.unreadWorkspaces(); !slices.Contains(got, spaceTeam) {
+		t.Errorf("unread workspaces = %v, want Oxide's", got)
+	}
+
+	sw, ok := f.b.switchTo(spaceTeam).(ui.WorkspaceSwitchedMsg)
+	if !ok || sw.TeamName != "Oxide" || len(sw.Channels) != 1 || sw.Channels[0].ID != ea || sw.SectionsProvider == nil {
+		t.Fatalf("Switch = %#v", sw)
+	}
+	resp = lsync()
+	ljoin(resp, eng).Timeline.Events = []*event.Event{ltxt(t, "$e2", bob, 6000, "now?")}
+	got = f.sync(resp)
+	if len(got) != 1 {
+		t.Fatalf("a message in the workspace on screen sent %#v", got)
+	}
+	if m, ok := got[0].(ui.NewMessageMsg); !ok || m.ChannelID != ea || m.Message.Text != "now?" {
+		t.Fatalf("a message in the workspace on screen sent %#v", got)
+	}
+}
 
 func TestBackfillSendsNothing(t *testing.T) {
 	f := newLiveFixture(t)

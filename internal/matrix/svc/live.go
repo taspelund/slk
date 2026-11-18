@@ -44,13 +44,20 @@ import (
 // between. The batch that made the startup snapshot sends no messages:
 // the snapshot already holds it.
 //
-// What each change becomes (rooms.Changes; one account is one workspace,
-// always the active one):
+// What each change becomes (rooms.Changes). The account is several
+// workspaces (workspaces.go); a room's message, reaction, receipt-mark and
+// typing events are sent only while a workspace it is in is on screen,
+// and otherwise only a ReadStateChangedMsg per workspace it is in, for the
+// rail's dot:
 //
+//	workspaces changed       WorkspacesSetMsg with the whole rail (checked
+//	                         every batch: a space's children can change
+//	                         without any room's row changing)
 //	rooms joined or changed  ConversationOpenedMsg (sidebar and finder row) and
-//	                         ChannelResolvedMsg (mention name) per room, then
-//	                         one SectionsRefreshedMsg with the whole sidebar
-//	                         (a room left drops out, sections move)
+//	                         ChannelResolvedMsg (mention name) per room and
+//	                         workspace it is in, then a SectionsRefreshedMsg
+//	                         with the whole sidebar of each workspace that
+//	                         changed (a room left drops out, sections move)
 //	names                    UserResolvedMsg
 //	Added                    NewMessageMsg; a thread reply carries ThreadTS,
 //	                         and reduceNewMessage bumps its parent's reply
@@ -158,8 +165,9 @@ var _ sidebar.SectionsProvider = (*sectionsProvider)(nil)
 func (b *Backend) selfAlias() string { return b.teamID[1:] }
 
 // StartupMsgs waits until Run has applied the first sync, then returns
-// the workspace as the UI starts with it: one WorkspaceReadyMsg (Theme
-// and SidebarWidth left for the caller to fill from the config), then a
+// the workspaces as the UI starts with them: a WorkspacesSetMsg with the
+// rail, one WorkspaceReadyMsg per workspace (the one holding the room with
+// the newest event InitialActive, on that room), then a
 // ConnectionStateMsg. If the first sync fails, it does not wait for a
 // later one: the workspace is the store's, and the connection
 // disconnected.
@@ -172,30 +180,42 @@ func (b *Backend) StartupMsgs(ctx context.Context) ([]tea.Msg, error) {
 	}
 	defer l.startedOnce.Do(func() { close(l.started) })
 	snap := b.rooms.Snapshot()
-	l.sections.set(snap.Sections)
-	name := b.d.Account
-	if name == "" {
-		name = b.self.Homeserver()
-	}
+	b.refreshWorkspaces()
 	state := 2
 	if l.synced.Load() {
 		state = 1
 	}
-	return []tea.Msg{
-		ui.WorkspaceReadyMsg{
-			TeamID:           b.teamID,
-			TeamName:         name,
-			Channels:         snap.Channels,
+	last := b.lastChannel(ctx, snap)
+	// The workspace on screen first is the one with the newest room.
+	initial := b.teamID
+	if ts := b.teamsOf(last); len(ts) > 0 {
+		initial = ts[0]
+	}
+	b.ws.mu.Lock()
+	b.ws.active = initial
+	b.ws.mu.Unlock()
+	out := []tea.Msg{ui.WorkspacesSetMsg{Items: b.railItems()}}
+	for _, item := range b.railItems() {
+		ws, sections, _ := b.workspace(item.ID)
+		theme, width := b.style(item.ID)
+		ready := ui.WorkspaceReadyMsg{
+			TeamID:           item.ID,
+			TeamName:         ws.Name,
+			Theme:            theme,
+			SidebarWidth:     width,
+			Channels:         ws.Channels,
 			ChannelNames:     snap.ChannelNames,
-			FinderItems:      snap.Finder,
+			FinderItems:      ws.Finder,
 			UserNames:        snap.UserNames,
 			UserID:           b.selfAlias(),
-			SectionsProvider: l.sections,
-			InitialActive:    true,
-			LastChannelID:    b.lastChannel(ctx, snap),
-		},
-		ui.ConnectionStateMsg{State: state},
-	}, nil
+			SectionsProvider: sections,
+		}
+		if item.ID == initial {
+			ready.InitialActive, ready.LastChannelID = true, last
+		}
+		out = append(out, ready)
+	}
+	return append(out, ui.ConnectionStateMsg{State: state}), nil
 }
 
 // lastChannel is the sidebar room with the newest event.
@@ -342,33 +362,47 @@ func (r *liveRun) changes(ctx context.Context, ch rooms.Changes, notifyNew, decr
 		return *snap
 	}
 
-	// Rooms first, so a new room's row exists before its messages.
-	changed := uniqueRooms(ch.Rooms, ch.Joined, ch.Left)
-	if len(changed) > 0 {
-		s := snapshot()
-		for _, rid := range changed {
-			room, ok := b.rooms.RoomByID(rid)
-			if !ok {
-				continue
-			}
-			if i := slices.IndexFunc(s.Channels, func(c sidebar.ChannelItem) bool { return c.ID == room.Alias }); i >= 0 {
-				msg := ui.ConversationOpenedMsg{TeamID: b.teamID, Item: s.Channels[i]}
-				if j := slices.IndexFunc(s.Finder, func(f core.ChannelFinderItem) bool { return f.ID == room.Alias }); j >= 0 {
-					msg.FinderItem = s.Finder[j]
+	// Rooms first, so a new room's row exists before its messages. The
+	// workspaces are rebuilt every batch: a space's children can change
+	// without any room's own row changing.
+	active := b.activeTeam()
+	railChanged, wsChanged := b.refreshWorkspaces()
+	if railChanged {
+		r.send(ui.WorkspacesSetMsg{Items: b.railItems()})
+	}
+	for _, rid := range uniqueRooms(ch.Rooms, ch.Joined, ch.Left) {
+		room, ok := b.rooms.RoomByID(rid)
+		if !ok {
+			continue
+		}
+		for _, team := range b.teamsOf(room.Alias) {
+			ws, _, _ := b.workspace(team)
+			if i := slices.IndexFunc(ws.Channels, func(c sidebar.ChannelItem) bool { return c.ID == room.Alias }); i >= 0 {
+				msg := ui.ConversationOpenedMsg{TeamID: team, Item: ws.Channels[i]}
+				if j := slices.IndexFunc(ws.Finder, func(f core.ChannelFinderItem) bool { return f.ID == room.Alias }); j >= 0 {
+					msg.FinderItem = ws.Finder[j]
 				}
 				r.send(msg)
 			}
 			if room.Name != "" {
-				r.send(ui.ChannelResolvedMsg{TeamID: b.teamID, ChannelID: room.Alias, Name: room.Name})
+				r.send(ui.ChannelResolvedMsg{TeamID: team, ChannelID: room.Alias, Name: room.Name})
 			}
 		}
-		r.l.sections.set(s.Sections)
-		r.send(ui.SectionsRefreshedMsg{TeamID: b.teamID, Channels: s.Channels})
+	}
+	for _, ws := range wsChanged {
+		r.send(ui.SectionsRefreshedMsg{TeamID: b.teamOf(ws.ID), Channels: ws.Channels})
 	}
 	for _, u := range ch.Names {
-		r.send(ui.UserResolvedMsg{TeamID: b.teamID, UserID: res.UserAlias(u), DisplayName: b.rooms.DisplayName("", u)})
+		r.send(ui.UserResolvedMsg{TeamID: active, UserID: res.UserAlias(u), DisplayName: b.rooms.DisplayName("", u)})
 	}
 
+	// railDot tells the rail a room in a workspace not on screen
+	// changed its read state.
+	railDot := func(alias string) {
+		for _, team := range b.teamsOf(alias) {
+			r.send(ui.ReadStateChangedMsg{WorkspaceID: team, ChannelID: alias})
+		}
+	}
 	newIn := map[id.RoomID]bool{}
 	for _, c := range ch.Timeline {
 		if !c.Live {
@@ -376,6 +410,22 @@ func (r *liveRun) changes(ctx context.Context, ch rooms.Changes, notifyNew, decr
 		}
 		room, ok := b.rooms.RoomByID(c.Room)
 		if !ok {
+			continue
+		}
+		if !b.inActive(room.Alias) {
+			// Not on screen: the store has it for when the room is
+			// opened; the rail's dot and notifications follow.
+			if c.Kind == rooms.Added || (c.Kind == rooms.Edited && decrypted) {
+				if e, ok, err := b.d.Store.GetEvent(ctx, c.Room, c.Event); err == nil && ok {
+					if it, shown := r.item(ctx, c.Room, e); shown {
+						if c.Kind == rooms.Added && notifyNew {
+							r.notify(c.Room, room, e.ID, it)
+						} else if c.Kind == rooms.Edited {
+							r.notifyDecrypted(c.Room, room, e.ID, it)
+						}
+					}
+				}
+			}
 			continue
 		}
 		switch c.Kind {
@@ -422,13 +472,18 @@ func (r *liveRun) changes(ctx context.Context, ch rooms.Changes, notifyNew, decr
 			continue
 		}
 		if rec.Thread == "" {
-			unread := 0
-			if snapshot().ReadStates[room.Alias].HasUnread {
-				unread = 1
+			railDot(room.Alias)
+			if b.inActive(room.Alias) {
+				unread := 0
+				if snapshot().ReadStates[room.Alias].HasUnread {
+					unread = 1
+				}
+				r.send(ui.ChannelMarkedRemoteMsg{ChannelID: room.Alias, TS: rec.TS, UnreadCount: unread})
 			}
-			r.send(ui.ReadStateChangedMsg{WorkspaceID: b.teamID, ChannelID: room.Alias})
-			r.send(ui.ChannelMarkedRemoteMsg{ChannelID: room.Alias, TS: rec.TS, UnreadCount: unread})
 			refreshed[rec.Room] = true
+			continue
+		}
+		if !b.inActive(room.Alias) {
 			continue
 		}
 		rootTS, ok, err := b.d.IDs.TS(ctx, rec.Room, rec.Thread)
@@ -436,7 +491,7 @@ func (r *liveRun) changes(ctx context.Context, ch rooms.Changes, notifyNew, decr
 			continue
 		}
 		r.send(ui.ThreadMarkedRemoteMsg{ChannelID: room.Alias, ThreadTS: rootTS, LastRead: rec.TS})
-		r.send(ui.ThreadsListDirtyMsg{TeamID: b.teamID})
+		r.send(ui.ThreadsListDirtyMsg{TeamID: active})
 	}
 	for _, rid := range ch.ReadStates {
 		if refreshed[rid] || newIn[rid] {
@@ -444,7 +499,7 @@ func (r *liveRun) changes(ctx context.Context, ch rooms.Changes, notifyNew, decr
 		}
 		refreshed[rid] = true
 		if room, ok := b.rooms.RoomByID(rid); ok {
-			r.send(ui.ReadStateChangedMsg{WorkspaceID: b.teamID, ChannelID: room.Alias})
+			railDot(room.Alias)
 		}
 	}
 
@@ -472,9 +527,12 @@ func (r *liveRun) sendTyping(rid id.RoomID, users []id.UserID) {
 	if !ok {
 		return
 	}
+	if !r.b.inActive(room.Alias) {
+		return
+	}
 	res := r.b.rooms.Resolver()
 	for _, u := range users {
-		r.send(ui.UserTypingMsg{ChannelID: room.Alias, UserID: res.UserAlias(u), WorkspaceID: r.b.teamID})
+		r.send(ui.UserTypingMsg{ChannelID: room.Alias, UserID: res.UserAlias(u), WorkspaceID: r.b.activeTeam()})
 	}
 }
 
@@ -517,7 +575,7 @@ func (r *liveRun) notify(rid id.RoomID, room rooms.Room, ev id.EventID, it core.
 	nctx := notify.NotifyContext{
 		CurrentUserID:   r.b.selfAlias(),
 		ActiveChannelID: active,
-		IsActiveWS:      true,
+		IsActiveWS:      r.b.inActive(room.Alias),
 		OnMention:       n.Config.OnMention,
 		OnDM:            n.Config.OnDM,
 		OnKeyword:       n.Config.OnKeyword,

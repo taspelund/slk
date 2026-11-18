@@ -83,10 +83,10 @@ func TestLiveAgainstHomeserver(t *testing.T) {
 		t.Fatalf("StartupMsgs: %v", err)
 	}
 	close(gate)
-	if len(startup) != 2 || startup[1] != (ui.ConnectionStateMsg{State: 1}) {
+	if len(startup) != 3 || startup[2] != (ui.ConnectionStateMsg{State: 1}) {
 		t.Fatalf("startup = %#v", startup)
 	}
-	if ready := startup[0].(ui.WorkspaceReadyMsg); ready.TeamID != b.TeamID() || ready.UserID != b.selfAlias() || !ready.InitialActive {
+	if ready := startup[1].(ui.WorkspaceReadyMsg); ready.TeamID != b.TeamID() || ready.UserID != b.selfAlias() || !ready.InitialActive {
 		t.Fatalf("ready = %+v", ready)
 	}
 

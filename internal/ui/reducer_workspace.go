@@ -19,6 +19,8 @@
 //	                          compose draft), push new channels/users/
 //	                          emoji, apply theme, restore the last
 //	                          channel viewed for this workspace.
+//	WorkspacesSetMsg        - the backend's workspaces changed:
+//	                          replace the rail's items.
 //	ConversationOpenedMsg   - WS event: a conversation just opened.
 //	                          Upsert sidebar/finder and refresh mentions.
 //	SectionsRefreshedMsg    - cache notice: sidebar sections were
@@ -75,6 +77,12 @@ var reduceWorkspace reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 
 	case WorkspaceSwitchedMsg:
 		return reduceWorkspaceSwitched(a, m), true
+
+	case WorkspacesSetMsg:
+		a.SetWorkspaces(m.Items)
+		a.workspaceRail.SelectByID(a.activeTeamID)
+		a.syncWorkspaceFinder()
+		return nil, true
 
 	case ConversationOpenedMsg:
 		if m.TeamID == a.activeTeamID {

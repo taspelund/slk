@@ -17,6 +17,7 @@ import (
 	"github.com/gammons/slk/internal/matrix/ident"
 	"github.com/gammons/slk/internal/matrix/session"
 	"github.com/gammons/slk/internal/matrix/store"
+	"github.com/gammons/slk/internal/ui"
 )
 
 // TestProfileAndPresenceAgainstHomeserver looks up a stranger's profile
@@ -86,9 +87,16 @@ func TestProfileAndPresenceAgainstHomeserver(t *testing.T) {
 	}
 	p.presence.SetStatus(core.PresenceSetActive, 0)
 	e2e.Eventually(t, "alice online", func() bool { return presence() == event.PresenceOnline })
-	select {
-	case m := <-sent:
-		t.Errorf("sent %#v", m)
-	default:
+	// Accepted presence is told to the UI for every workspace; nothing
+	// else (no toast, no undo) is sent.
+	for {
+		select {
+		case m := <-sent:
+			if _, ok := m.(ui.StatusChangeMsg); !ok {
+				t.Errorf("sent %#v", m)
+			}
+		default:
+			return
+		}
 	}
 }

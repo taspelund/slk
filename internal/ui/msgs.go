@@ -26,6 +26,7 @@ import (
 	"github.com/gammons/slk/internal/ui/searchresults"
 	"github.com/gammons/slk/internal/ui/sidebar"
 	"github.com/gammons/slk/internal/ui/styles"
+	"github.com/gammons/slk/internal/ui/workspace"
 )
 
 // EmojiImageReadyMsg re-exports emoji.EmojiImageReadyMsg so reducers
@@ -460,6 +461,12 @@ type (
 	ChannelMembershipMsg struct {
 		ChannelID string
 		MemberIDs []string
+	}
+	// WorkspacesSetMsg replaces the workspace rail's items (and the
+	// workspace finder's), as App.SetWorkspaces does before the program
+	// runs: for a backend whose workspaces change while it runs.
+	WorkspacesSetMsg struct {
+		Items []workspace.WorkspaceItem
 	}
 	WorkspaceReadyMsg struct {
 		TeamID   string

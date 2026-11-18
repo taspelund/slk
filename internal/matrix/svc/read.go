@@ -24,6 +24,7 @@ import (
 	"github.com/gammons/slk/internal/matrix/store"
 	"github.com/gammons/slk/internal/text"
 	"github.com/gammons/slk/internal/ui"
+	"github.com/gammons/slk/internal/ui/sidebar"
 )
 
 // The read side: channel history, threads, unread state, search and
@@ -109,10 +110,7 @@ func (b *Backend) fillRead(p *ports) {
 		return b.searchChannel(string(ch), query)
 	}
 	p.unread = core.NewUnreadService(b.readStates, b.unreadWorkspaces)
-	// One account is one workspace, and the UI never switches to the one
-	// it shows (every switchWorkspace caller checks), so Switch answers
-	// nil, the documented "not connected", for every ID.
-	p.workspace = core.NewWorkspaceService(func(string) core.Msg { return nil })
+	p.workspace = core.NewWorkspaceService(b.switchTo)
 	p.avatars = core.NewAvatarService(b.avatar, nil)
 }
 
@@ -707,7 +705,7 @@ func (b *Backend) listThreads(team string) core.Msg {
 	var out []core.ThreadSummary
 	for _, st := range stats {
 		r, ok := b.rooms.RoomByID(st.room)
-		if !ok {
+		if !ok || !slices.Contains(b.teamsOf(r.Alias), team) {
 			continue
 		}
 		rootRow, ok, err := b.d.Store.GetEvent(ctx, st.room, st.root)
@@ -927,15 +925,18 @@ func (b *Backend) markReadLocal(ch ids.ChannelID, ts ids.MessageTS) core.Msg {
 	return ui.ChannelMarkedReadMsg{ChannelID: string(ch)}
 }
 
-// unreadWorkspaces is UnreadService.UnreadWorkspaces: this account's
-// workspace when one of its rooms is unread.
+// unreadWorkspaces is UnreadService.UnreadWorkspaces: the workspaces
+// with an unread room, in rail order.
 func (b *Backend) unreadWorkspaces() []string {
-	for _, rs := range b.readStates() {
-		if rs.HasUnread {
-			return []string{b.teamID}
+	states := b.readStates()
+	list, teams := b.current()
+	var out []string
+	for i, ws := range list {
+		if slices.ContainsFunc(ws.Channels, func(c sidebar.ChannelItem) bool { return states[c.ID].HasUnread }) {
+			out = append(out, teams[i])
 		}
 	}
-	return nil
+	return out
 }
 
 // avatarPalette and the tile below are internal/demo's renderAvatar,

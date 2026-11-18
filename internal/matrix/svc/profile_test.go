@@ -201,10 +201,22 @@ func TestSetStatusAwayAndActiveSetMatrixPresence(t *testing.T) {
 	if got := awaitOne(t, puts); got != "online" {
 		t.Errorf("active put %q", got)
 	}
-	select {
-	case m := <-msgs:
-		t.Errorf("sent %#v", m)
-	case <-time.After(50 * time.Millisecond):
+	// The account's presence is every workspace's: the UI hears the
+	// accepted one for each, last of all the latest choice.
+	var last tea.Msg
+	for done := false; !done; {
+		select {
+		case m := <-msgs:
+			if _, ok := m.(ui.StatusChangeMsg); !ok {
+				t.Errorf("sent %#v", m)
+			}
+			last = m
+		case <-time.After(200 * time.Millisecond):
+			done = true
+		}
+	}
+	if want := (ui.StatusChangeMsg{TeamID: h.b.TeamID(), Presence: "active"}); last != want {
+		t.Errorf("last message = %#v, want %#v", last, want)
 	}
 }
 

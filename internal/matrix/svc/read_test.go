@@ -616,7 +616,10 @@ func TestLookupAndAvatar(t *testing.T) {
 	if av := p.avatars.Avatar("UNOBODY0000"); av != "" {
 		t.Errorf("Avatar of an unknown alias = %q", av)
 	}
-	if p.workspace.Switch(h.b.TeamID()) != nil {
-		t.Errorf("Switch returned a message")
+	if sw, ok := p.workspace.Switch(h.b.TeamID()).(ui.WorkspaceSwitchedMsg); !ok || sw.TeamName != "Direct Messages" || len(sw.Channels) != 1 || sw.Channels[0].ID != h.alias {
+		t.Errorf("Switch to Direct Messages = %#v", sw)
+	}
+	if m := p.workspace.Switch("MNOSUCH"); m != nil {
+		t.Errorf("Switch to an unknown workspace = %#v", m)
 	}
 }

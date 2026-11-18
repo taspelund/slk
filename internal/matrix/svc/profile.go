@@ -162,7 +162,7 @@ func (b *Backend) cachedProfile(teamID, alias string) (core.UserProfile, bool) {
 
 // profileUser is the MXID of a user alias in this account's workspace.
 func (b *Backend) profileUser(teamID, alias string) (id.UserID, error) {
-	if teamID != b.teamID {
+	if !b.knownTeam(teamID) {
 		return "", fmt.Errorf("svc: unknown workspace %q", teamID)
 	}
 	user, ok := b.rooms.Resolver().MXID(alias)
@@ -180,7 +180,7 @@ func (b *Backend) modelName(user id.UserID) (string, bool) {
 }
 
 func (b *Backend) makeProfile(alias string, user id.UserID, name string) core.UserProfile {
-	return core.UserProfile{UserID: alias, TeamID: b.teamID, Handle: string(user), RealName: name, DisplayName: name}
+	return core.UserProfile{UserID: alias, TeamID: b.activeTeam(), Handle: string(user), RealName: name, DisplayName: name}
 }
 
 // localpartOf is the name the room model gives a user it has no name for
@@ -237,7 +237,7 @@ func (b *Backend) setStatus(action core.PresenceAction, _ int) {
 		s.mu.Lock()
 		want := s.want
 		s.mu.Unlock()
-		b.uiSend(ui.StatusChangeMsg{TeamID: b.teamID, Presence: want}, ui.ToastMsg{Text: toastNoDND})
+		b.uiSend(append(b.statusChanges(want), ui.ToastMsg{Text: toastNoDND})...)
 	case core.PresenceSetWFH, core.PresenceSetVacation, core.PresenceClearStatus:
 		b.uiSend(ui.ToastMsg{Text: toastNoCustomStatus})
 	}
@@ -272,11 +272,29 @@ func (b *Backend) putPresence() {
 	}
 	have, latest := s.have, s.want == want
 	s.mu.Unlock()
-	if err == nil || !latest {
+	if !latest {
+		return
+	}
+	if err == nil {
+		// The UI set the workspace on screen; the account's presence is
+		// every workspace's.
+		b.uiSend(b.statusChanges(want)...)
 		return
 	}
 	debuglog.General("matrix: set presence %s: %v", presence, err)
-	b.uiSend(ui.StatusChangeMsg{TeamID: b.teamID, Presence: have}, ui.ToastMsg{Text: "Couldn't set presence: " + err.Error()})
+	b.uiSend(append(b.statusChanges(have), ui.ToastMsg{Text: "Couldn't set presence: " + err.Error()})...)
+}
+
+// statusChanges sets presence in every workspace of the account.
+func (b *Backend) statusChanges(presence string) []tea.Msg {
+	var out []tea.Msg
+	for _, item := range b.railItems() {
+		out = append(out, ui.StatusChangeMsg{TeamID: item.ID, Presence: presence})
+	}
+	if len(out) == 0 {
+		out = append(out, ui.StatusChangeMsg{TeamID: b.teamID, Presence: presence})
+	}
+	return out
 }
 
 // uiSend sends msgs to the UI in order, from a new goroutine:
