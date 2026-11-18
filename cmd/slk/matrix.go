@@ -244,9 +244,13 @@ func runMatrix(account string, readOnly bool) error {
 		Stat:       os.Stat,
 		SaveThread: export.SaveThread,
 	}))
-	// Inline images and emoji draw the way they do on Slack: kitty,
-	// sixel or half blocks, whichever this terminal supports.
-	images := setupTerminalImages(cfg, app, b.ImageFetcher())
+	// Inline images draw the way they do on Slack: kitty, sixel or half
+	// blocks, whichever this terminal supports. Emoji stay glyphs: their
+	// images come from Slack's CDN, which a Matrix session must not
+	// contact (and the Matrix fetcher refuses).
+	imgCfg := cfg
+	imgCfg.Appearance.EmojiImages = "off"
+	images := setupTerminalImages(imgCfg, app, b.ImageFetcher())
 	p := tea.NewProgram(app, images.ProgramOptions...)
 	images.install(app, p.Send)
 	// Presence toasts and loaded member lists reach the UI outside Run.
