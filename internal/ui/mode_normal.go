@@ -141,6 +141,9 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		return a.searchStep(-1)
 
 	case key.Matches(msg, a.keys.WorkspaceSearch):
+		if cmd, refused := a.refuseSlackOnly("workspace search; / searches this conversation"); refused {
+			return cmd
+		}
 		a.searchResults.Open()
 		a.SetMode(ModeWorkspaceSearch)
 		return nil

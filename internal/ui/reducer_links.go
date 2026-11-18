@@ -183,8 +183,21 @@ func opensWithoutConfirm(rawURL string) bool {
 	return false
 }
 
-// routeLink decides between in-app navigation and the browser.
+// routeLink decides between in-app navigation and the browser. A link
+// the backend's LinkResolver resolves (a matrix.to link to a joined
+// room) opens in the workspace on screen, as a Slack permalink does.
 func (a *App) routeLink(rawURL string) tea.Cmd {
+	if t, ok := a.resolveBackendLink(rawURL); ok {
+		if cmd, ok := a.applyLocation(Location{
+			TeamID:    ids.TeamID(a.activeTeamID),
+			ChannelID: t.ChannelID,
+			MessageTS: t.MessageTS,
+			ThreadTS:  t.ThreadTS,
+		}, false); ok {
+			return cmd
+		}
+		return a.browserOpener(rawURL)
+	}
 	pl, ok := slackurl.Parse(rawURL)
 	if !ok || !a.permalinkBelongsToActiveWorkspace(pl) {
 		return a.browserOpener(rawURL)

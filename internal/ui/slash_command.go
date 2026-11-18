@@ -114,6 +114,9 @@ func (a *App) trySlashCommand(panel Panel, c *compose.Model, channelID, threadTS
 	_, cargs, _ := splitCommandLine(name + " " + args)
 	cargs.Origin = commandOrigin{teamID: a.activeTeamID, channelID: channelID, threadTS: threadTS, typed: raw}
 	run := runCommand(a, slashCommands, name, cargs, func(a *App, name string, args commandArgs) tea.Cmd {
+		if !a.backend.slack() {
+			return a.refuseCommand(args.Origin, name+": "+a.backend.Name+" has no server slash commands")
+		}
 		return a.runRemoteCommand(channelID, threadTS, name, args.Rest, raw)
 	})
 	return tea.Batch(run, a.tryOpenActionPrompt()), true

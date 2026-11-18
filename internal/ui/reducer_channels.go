@@ -9,7 +9,9 @@
 //	                                view state, mark visit,
 //	                                dispatch by cache freshness
 //	                                tier (fresh / verify-in-bg /
-//	                                spinner).
+//	                                spinner). An invite row is not
+//	                                opened: it asks to join or
+//	                                decline (invites.go).
 //	MessagesLoadedMsg             - initial messages fetch landed:
 //	                                replace pane contents (nil =
 //	                                network failure, keep cache).
@@ -72,6 +74,14 @@ var reduceChannels reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		if m.TeamID != "" && m.TeamID != a.activeTeamID {
 			// Queued in a workspace the user has since left.
 			return nil, true
+		}
+		if item, ok := a.inviteItem(m.ID); ok {
+			// An invite is not opened: it asks to join or decline
+			// (invites.go). A jump to it ends here.
+			if a.pendingLinkNav != nil && string(a.pendingLinkNav.ChannelID) == m.ID {
+				a.pendingLinkNav = nil
+			}
+			return a.openInvitePrompt(item), true
 		}
 		refused := a.compose.Uploading() || a.threadCompose.Uploading()
 		cmd, fetchFired := reduceChannelSelected(a, m)

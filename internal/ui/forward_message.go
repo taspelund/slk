@@ -28,6 +28,9 @@ type messageForwardedMsg struct {
 }
 
 func (a *App) beginForwardOfSelected() tea.Cmd {
+	if cmd, refused := a.refuseSlackOnly("message forwarding"); refused {
+		return cmd
+	}
 	if a.view == ViewThreads && a.focusedPanel == PanelMessages {
 		return nil // The Threads list is not the hidden channel message pane.
 	}

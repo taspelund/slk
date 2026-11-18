@@ -101,6 +101,9 @@ func cmdActivity(a *App, _ commandArgs) tea.Cmd {
 // highlighted row, no active channel — refuses. The H key calls this
 // same handler.
 func cmdHuddle(a *App, _ commandArgs) tea.Cmd {
+	if cmd, refused := a.refuseSlackOnly("huddles"); refused {
+		return cmd
+	}
 	var channelID string
 	switch {
 	case a.focusedPanel == PanelThread:

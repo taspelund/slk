@@ -37,7 +37,7 @@ func handleHelpMode(a *App, msg tea.KeyMsg) tea.Cmd {
 // openHelpOverlay opens the keybindings overlay with entries derived
 // from the live keymap. Shared by ? and :help.
 func (a *App) openHelpOverlay() {
-	a.help.SetEntries(help.FromKeyMap(a.keys))
+	a.help.SetEntries(help.FromKeyMap(a.helpKeyMap()))
 	a.help.Open()
 	a.SetMode(ModeHelp)
 }

@@ -296,7 +296,8 @@ func TestReadOnlyChangesNothing(t *testing.T) {
 			t.Errorf("read-only backend sent %s", r)
 		}
 	}
-	if p.messages.Send != nil || p.threads.SendReply != nil || p.reactions != nil || p.presence != nil {
+	if p.messages.Send != nil || p.threads.SendReply != nil || p.reactions != nil || p.presence != nil ||
+		p.channels.Join != nil || p.channels.DeclineInvite != nil {
 		t.Errorf("read-only backend has write ports: %+v", p)
 	}
 	res, ok := p.files.Upload(h.alias, "", "", nil)().(ui.UploadResultMsg)

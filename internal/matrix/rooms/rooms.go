@@ -24,7 +24,9 @@
 //     space (by m.space.child "order", then by name), rooms in no space in
 //     "Rooms", DMs in "Direct Messages". Spaces themselves are not
 //     sidebar rows
-//   - invites and rooms that were left are not sidebar rows yet (WP-UI)
+//   - pending invites are rows of an "Invites" section in Workspaces
+//     (not in Snapshot's single sidebar); rooms that were left are not
+//     rows
 //
 // Read state, per room alias:
 //
@@ -719,6 +721,32 @@ func (m *Model) RoomByID(room id.RoomID) (Room, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.roomLocked(room)
+}
+
+// RoomByCanonicalAlias returns the room whose m.room.canonical_alias
+// alias is (#name:server), a sidebar room first when several claim it
+// (a room and the one it was upgraded from). Alternative aliases are not
+// kept, so they are not found.
+func (m *Model) RoomByCanonicalAlias(alias id.RoomAlias) (Room, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if alias == "" {
+		return Room{}, false
+	}
+	var found id.RoomID
+	for rid, r := range m.rooms {
+		if r.row.CanonicalAlias != alias {
+			continue
+		}
+		if r.sidebar() {
+			return m.roomLocked(rid)
+		}
+		found = rid
+	}
+	if found == "" {
+		return Room{}, false
+	}
+	return m.roomLocked(found)
 }
 
 // roomLocked builds the Room for rid; m.mu is held. Section is the

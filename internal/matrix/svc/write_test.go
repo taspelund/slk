@@ -387,6 +387,35 @@ func TestJoiningADirectInviteAddsItToMDirect(t *testing.T) {
 	}
 }
 
+func TestDeclineInviteLeavesTheRoom(t *testing.T) {
+	s := newWriteServer(t)
+	const room id.RoomID = "!inv:example.org"
+	resp := lsync()
+	resp.Rooms.Invite[room] = &mautrix.SyncInvitedRoom{State: mautrix.SyncEventsList{Events: []*event.Event{
+		lstate(t, "m.room.member", string(self), alice, map[string]any{"membership": "invite"}),
+	}}}
+	s.apply(resp)
+	alias := s.res().RoomAlias(room)
+	got := s.ports.channels.DeclineInvite(ids.ChannelID(alias))
+	if got != (ui.InviteDeclinedMsg{ChannelID: alias}) {
+		t.Fatalf("DeclineInvite = %#v", got)
+	}
+	if req := s.one("/leave"); req.method != http.MethodPost || req.path != "/_matrix/client/v3/rooms/"+string(room)+"/leave" {
+		t.Fatalf("leave = %+v", req)
+	}
+	s.answer = func(w http.ResponseWriter, r writeReq) bool {
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(t, w, map[string]any{"errcode": "M_FORBIDDEN", "error": "no"})
+		return true
+	}
+	if got := s.ports.channels.DeclineInvite(ids.ChannelID(alias)).(ui.InviteDeclinedMsg); got.Err == nil {
+		t.Fatalf("refused DeclineInvite = %#v, want an error", got)
+	}
+	if got := s.ports.channels.DeclineInvite("Cnope").(ui.InviteDeclinedMsg); got.Err == nil {
+		t.Fatalf("DeclineInvite of an unknown alias = %#v", got)
+	}
+}
+
 func TestOpenConversation(t *testing.T) {
 	s := newWriteServer(t)
 	const dm id.RoomID = "!new:example.org"

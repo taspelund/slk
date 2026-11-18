@@ -144,6 +144,7 @@ func (b *Backend) fillWrite(p *ports) {
 
 	p.channels.MarkRead = func(ch ids.ChannelID, ts ids.MessageTS) core.Msg { return b.markRead(string(ch), string(ts)) }
 	p.channels.Join = func(ch ids.ChannelID, _ string) core.Msg { return b.join(string(ch)) }
+	p.channels.DeclineInvite = func(ch ids.ChannelID) core.Msg { return b.declineInvite(string(ch)) }
 	p.channels.OpenConversation = func(users []string, req uint64) core.Cmd {
 		users = slices.Clone(users)
 		return func() core.Msg { return b.openConversation(users, req) }
@@ -462,6 +463,19 @@ func (b *Backend) join(alias string) core.Msg {
 		name = r.Name
 	}
 	return ui.ChannelJoinedMsg{ID: alias, Name: name}
+}
+
+// declineInvite is ChannelService.DeclineInvite: it leaves the room the
+// account is invited to. The room drops out of the Invites section when
+// /sync brings the leave.
+func (b *Backend) declineInvite(alias string) core.Msg {
+	ctx, cancel, room, err := b.writeCtx(alias)
+	if err != nil {
+		return ui.InviteDeclinedMsg{ChannelID: alias, Err: err}
+	}
+	defer cancel()
+	_, err = b.client.LeaveRoom(ctx, room)
+	return ui.InviteDeclinedMsg{ChannelID: alias, Err: err}
 }
 
 // addDirect lists room under each of users in the account's m.direct.

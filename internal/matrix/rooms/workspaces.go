@@ -30,6 +30,15 @@ const HomeName = "Direct Messages"
 // itself, in "Rooms" after them. A room under two top-level spaces is in
 // both. Rooms whose only spaces form a cycle with no top count as in no
 // space.
+//
+// Pending invites (invited rooms that are not spaces) are rows of an
+// "Invites" section (ID "invites", type "invites"), first in the
+// workspace the room would be in once joined: a direct invite in Direct
+// Messages, a room under a joined space in that space's top-level
+// workspace, any other in its server's (which an invite alone can add to
+// the rail). Their ChannelItem has Invite set and Inviter the inviter's
+// display name, when known (an invite synced in this process, or a
+// direct one); they have no Finder entry.
 type Workspace struct {
 	ID       string
 	Name     string
@@ -103,21 +112,33 @@ func (m *Model) workspacesLocked() []Workspace {
 		}
 	}
 	for _, r := range m.rooms {
-		if !r.sidebar() {
+		invite := r.invite()
+		if !r.sidebar() && !invite {
 			continue
 		}
+		// section is the section of a joined room, or of an invite.
+		section := func(joined string) string {
+			if invite {
+				return sectionInvites
+			}
+			return joined
+		}
 		if r.row.Kind == store.RoomDM || r.row.Kind == store.RoomGroupDM {
-			home = append(home, entry{r, sectionDMs})
+			home = append(home, entry{r, section(sectionDMs)})
 			continue
 		}
 		ts := tops(r.row.ID, map[id.RoomID]bool{})
 		if len(ts) == 0 {
 			srv := serverOf(r)
-			byServer[srv] = append(byServer[srv], entry{r, sectionRooms})
+			byServer[srv] = append(byServer[srv], entry{r, section(sectionRooms)})
 			continue
 		}
 		ps := parents(r.row.ID)
 		for top := range ts {
+			if invite {
+				byTop[top] = append(byTop[top], entry{r, sectionInvites})
+				continue
+			}
 			var best *room
 			var bestOrder string
 			for p, order := range ps {
@@ -140,6 +161,9 @@ func (m *Model) workspacesLocked() []Workspace {
 	})
 
 	build := func(ws *Workspace, entries []entry, sections []sidebar.SectionMeta) {
+		if slices.ContainsFunc(entries, func(e entry) bool { return e.section == sectionInvites }) {
+			sections = append([]sidebar.SectionMeta{{ID: sectionInvites, Name: "Invites", Type: "invites"}}, sections...)
+		}
 		rank := map[string]int{}
 		for i, s := range sections {
 			rank[s.ID] = i
@@ -160,10 +184,19 @@ func (m *Model) workspacesLocked() []Workspace {
 			if r.row.DMUserID != "" {
 				dm, _ = m.cachedUserAlias(r.row.DMUserID)
 			}
-			ws.Channels = append(ws.Channels, sidebar.ChannelItem{
+			item := sidebar.ChannelItem{
 				ID: r.alias, Name: r.row.Name, Type: string(r.row.Kind), Section: e.section,
 				SectionOrder: rank[e.section] + 1, DMUserID: dm,
-			})
+			}
+			if e.section == sectionInvites {
+				item.Invite = true
+				if r.inviter != "" {
+					item.Inviter = displayName(r, m.global, r.inviter)
+				}
+				ws.Channels = append(ws.Channels, item)
+				continue
+			}
+			ws.Channels = append(ws.Channels, item)
 			ws.Finder = append(ws.Finder, core.ChannelFinderItem{
 				ID: r.alias, Name: r.row.Name, Type: string(r.row.Kind), Joined: true, DMUserID: dm,
 			})
@@ -200,7 +233,7 @@ func (m *Model) workspacesLocked() []Workspace {
 		entries := byTop[top]
 		subs := map[string]*room{}
 		for _, e := range entries {
-			if e.section != sectionRooms {
+			if e.section != sectionRooms && e.section != sectionInvites {
 				subs[e.section] = m.rooms[m.byAlias[e.section]]
 			}
 		}

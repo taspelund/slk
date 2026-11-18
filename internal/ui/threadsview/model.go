@@ -107,6 +107,9 @@ type Model struct {
 	// false, View renders a one-line "Threads list unavailable"
 	// banner above the list/empty-state. Default is true (optimistic).
 	subscriptionsAvailable bool
+	// unavailableText replaces the banner's Slack wording when set
+	// (SetUnavailableText), for another backend.
+	unavailableText string
 
 	version int64
 }
@@ -238,6 +241,13 @@ func (m *Model) SetFocused(f bool) {
 
 // Focused reports whether the panel currently has keyboard focus.
 func (m *Model) Focused() bool { return m.focused }
+
+// SetUnavailableText words the "Threads list unavailable" banner for a
+// backend that is not Slack; "" keeps Slack's wording.
+func (m *Model) SetUnavailableText(text string) {
+	m.unavailableText = text
+	m.dirty()
+}
 
 // SetSubscriptionsAvailable records whether Slack's authoritative
 // subscription state could be fetched most recently. false flips the
@@ -548,6 +558,9 @@ func (m *Model) View(height, width int) string {
 	bodyHeight := height
 	if !m.subscriptionsAvailable {
 		bannerText := "Threads list unavailable — Slack subscription state could not be fetched. slk will retry on the next reconnect."
+		if m.unavailableText != "" {
+			bannerText = m.unavailableText
+		}
 		if w := lipgloss.Width(bannerText); w > width {
 			// Truncate to width.
 			runes := []rune(bannerText)

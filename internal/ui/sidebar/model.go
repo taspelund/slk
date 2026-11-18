@@ -82,6 +82,13 @@ type ChannelItem struct {
 	//
 	// Sourced from service.MuteStore in buildChannelItem.
 	IsMuted bool
+	// Invite marks a conversation the user is invited to and has not
+	// joined (a Matrix invite; Slack has none). Selecting it asks to
+	// join or decline instead of opening it (internal/ui/invites.go).
+	// Inviter is who invited them, "" when unknown; the row shows it
+	// after the name unless it is the name.
+	Invite  bool
+	Inviter string
 }
 
 // IsVisiblyUnread reports whether this channel should render the unread
@@ -393,6 +400,9 @@ type Model struct {
 	// NOT a channel — when the cursor sits on it, SelectedItem/SelectedID
 	// return zero / empty and the App layer activates the Activity view.
 	activityUnread int
+	// activityHidden leaves the Activity row out (nav and view), for a
+	// backend with no Activity feed. Set by SetActivityRowHidden.
+	activityHidden bool
 
 	// focused tracks whether this panel currently has user focus. When
 	// false, the cursor "▌" glyph dims from Accent to TextMuted (via
@@ -915,6 +925,19 @@ func (m *Model) SetActivityActive(active bool) {
 		return
 	}
 	m.activityActive = active
+	m.dirty()
+}
+
+// SetActivityRowHidden leaves the synthetic Activity row out of the
+// sidebar (hidden) or puts it back, for a backend with no Activity feed.
+func (m *Model) SetActivityRowHidden(hidden bool) {
+	if m.activityHidden == hidden {
+		return
+	}
+	key, hadKey := m.currentCursorKey()
+	m.activityHidden = hidden
+	m.rebuildNavWithCursor(key, hadKey)
+	m.cacheValid = false
 	m.dirty()
 }
 
@@ -1730,7 +1753,9 @@ func (m *Model) rebuildNav() {
 
 	nav := make([]navItem, 0, 2+len(sectionOrder))
 	nav = append(nav, navItem{kind: navThreads})
-	nav = append(nav, navItem{kind: navActivity})
+	if !m.activityHidden {
+		nav = append(nav, navItem{kind: navActivity})
+	}
 	for _, name := range sectionOrder {
 		nav = append(nav, navItem{kind: navHeader, header: name})
 		for _, fi := range bucket[name] {
@@ -2047,44 +2072,46 @@ func (m *Model) buildCache(width int) {
 		isThreadsRow: true,
 	})
 
-	// Synthetic "Activity" row, rendered directly below the Threads row.
-	// Same treatment as the Threads row (see above): the App layer
-	// activates the Activity view when IsActivitySelected() is true.
-	activityLabel := " ◉ Activity"
-	activityCursor := cursorSelected + "◉ Activity"
-	activityActiveLabel := activeBorder + "◉ Activity"
-	if m.activityUnread > 0 {
-		badge := m.countBadge(activityLabel, m.activityUnread, width, dotStyle)
-		activityLabel += badge
-		activityCursor += badge
-		activityActiveLabel += badge
+	if !m.activityHidden {
+		// Synthetic "Activity" row, rendered directly below the Threads row.
+		// Same treatment as the Threads row (see above): the App layer
+		// activates the Activity view when IsActivitySelected() is true.
+		activityLabel := " ◉ Activity"
+		activityCursor := cursorSelected + "◉ Activity"
+		activityActiveLabel := activeBorder + "◉ Activity"
+		if m.activityUnread > 0 {
+			badge := m.countBadge(activityLabel, m.activityUnread, width, dotStyle)
+			activityLabel += badge
+			activityCursor += badge
+			activityActiveLabel += badge
+		}
+		activityAttrs := bgAnsi
+		if m.activityUnread > 0 {
+			activityAttrs += "\x1b[1m"
+		}
+		activityPill := activityLabel
+		activityLabel = messages.ReapplyBgAfterResets(activityLabel, activityAttrs)
+		activityCursor = messages.ReapplyBgAfterResets(activityCursor, activityAttrs)
+		activityActiveLabel = messages.ReapplyBgAfterResets(activityActiveLabel, activityAttrs)
+		activityBaseStyle := styles.ChannelNormal
+		if m.activityUnread > 0 {
+			activityBaseStyle = styles.ChannelUnread
+		}
+		activityNormal := activityBaseStyle.Width(width - 2).Render(activityLabel)
+		activitySelectedRow := styles.ChannelSelected.Width(width - 2).Render(activityCursor)
+		if pillAttrs != "" {
+			activitySelectedRow = pillRow(activityPill, width, pillAttrs)
+		}
+		activityActiveRow := styles.ChannelSelected.Width(width - 2).Render(activityActiveLabel)
+		m.cacheRows = append(m.cacheRows, renderRow{
+			normal:        activityNormal,
+			selected:      activitySelectedRow,
+			active:        activityActiveRow,
+			height:        1,
+			navIdx:        activityIdx,
+			isActivityRow: true,
+		})
 	}
-	activityAttrs := bgAnsi
-	if m.activityUnread > 0 {
-		activityAttrs += "\x1b[1m"
-	}
-	activityPill := activityLabel
-	activityLabel = messages.ReapplyBgAfterResets(activityLabel, activityAttrs)
-	activityCursor = messages.ReapplyBgAfterResets(activityCursor, activityAttrs)
-	activityActiveLabel = messages.ReapplyBgAfterResets(activityActiveLabel, activityAttrs)
-	activityBaseStyle := styles.ChannelNormal
-	if m.activityUnread > 0 {
-		activityBaseStyle = styles.ChannelUnread
-	}
-	activityNormal := activityBaseStyle.Width(width - 2).Render(activityLabel)
-	activitySelectedRow := styles.ChannelSelected.Width(width - 2).Render(activityCursor)
-	if pillAttrs != "" {
-		activitySelectedRow = pillRow(activityPill, width, pillAttrs)
-	}
-	activityActiveRow := styles.ChannelSelected.Width(width - 2).Render(activityActiveLabel)
-	m.cacheRows = append(m.cacheRows, renderRow{
-		normal:        activityNormal,
-		selected:      activitySelectedRow,
-		active:        activityActiveRow,
-		height:        1,
-		navIdx:        activityIdx,
-		isActivityRow: true,
-	})
 
 	// Blank separator between the Threads/Activity rows and the first
 	// section (or below them when there are no channels at all).
@@ -2212,6 +2239,9 @@ func (m *Model) buildCache(width int) {
 		// stays inside the loop.
 		const rowChromeExcludingTrailer = 6 // cursor(2) + prefix(3) + space(1)
 		name := item.Name
+		if item.Invite && item.Inviter != "" && item.Inviter != item.Name {
+			name += " · " + item.Inviter
+		}
 		// A DM peer's status emoji follows the name after a space. It is
 		// charged to the name's budget so a long name truncates instead
 		// of pushing the emoji or the trailer off the row.

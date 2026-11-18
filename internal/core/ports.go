@@ -268,6 +268,12 @@ type ChannelService interface {
 	// or ChannelJoinFailedMsg).
 	Join(channelID ids.ChannelID, channelName string) Msg
 
+	// DeclineInvite turns down the pending invite to channelID (a
+	// sidebar row with ChannelItem.Invite). Returns a Msg (typically
+	// InviteDeclinedMsg, carrying any error). Slack has no invites
+	// of this kind and leaves it unset.
+	DeclineInvite(channelID ids.ChannelID) Msg
+
 	// RecordVisit persists a visit to channelID (SQLite write +
 	// WorkspaceContext last-visited map update). Fired once per
 	// ChannelSelectedMsg regardless of FromHistory.
@@ -428,6 +434,29 @@ type WorkspaceService interface {
 	// Switch makes teamID active and returns WorkspaceSwitchedMsg (or
 	// nil if the workspace isn't connected).
 	Switch(teamID string) Msg
+}
+
+// LinkResolver turns a link to one of the backend's own conversations
+// into the place in slk it names, so opening it navigates in the app
+// instead of the browser. Slack's permalinks are parsed by the App
+// itself (slackurl); a backend whose links look different implements
+// this (the Matrix backend: matrix.to links).
+type LinkResolver interface {
+	// ResolveLink answers from local state only, without blocking on
+	// the network: it runs on the UI goroutine, also while drawing the
+	// link picker. ok is false for a URL that is not the backend's, or
+	// names a conversation the user has not joined; the caller then
+	// opens it in the browser. A target with no MessageTS names the
+	// conversation alone; a ThreadTS says MessageTS is a reply in that
+	// thread.
+	ResolveLink(url string) (target LinkTarget, ok bool)
+}
+
+// LinkTarget is where a link resolved by LinkResolver points.
+type LinkTarget struct {
+	ChannelID ids.ChannelID
+	MessageTS ids.MessageTS
+	ThreadTS  ids.ThreadTS
 }
 
 // AvatarService renders user avatars for the message panes.

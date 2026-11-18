@@ -62,6 +62,10 @@ type Model struct {
 	// visibility must check both, not text alone.
 	currentStatusText  string
 	currentStatusEmoji string
+
+	// presenceOnly limits the menu to Active and Away, for a backend
+	// with no custom status or snooze (SetPresenceOnly).
+	presenceOnly bool
 }
 
 var _ interface {
@@ -85,6 +89,9 @@ func (m *Model) OpenWith(workspaceName, presence string, dndEnabled bool, dndEnd
 	m.currentPres = presence
 	m.dndActive = dndEnabled && (dndEnd.IsZero() || time.Now().Before(dndEnd))
 	m.items = buildItems(presence, m.dndActive, m.currentStatusText, m.currentStatusEmoji)
+	if m.presenceOnly {
+		m.items = m.items[:2] // Active and Away lead buildItems' rows
+	}
 	m.filter()
 }
 
@@ -95,6 +102,12 @@ func (m *Model) OpenWith(workspaceName, presence string, dndEnabled bool, dndEnd
 func (m *Model) SetCurrentCustomStatus(text, emoji string) {
 	m.currentStatusText = text
 	m.currentStatusEmoji = emoji
+}
+
+// SetPresenceOnly limits the menu to Active and Away (on), for a backend
+// with no custom status or snooze, or offers every row again.
+func (m *Model) SetPresenceOnly(on bool) {
+	m.presenceOnly = on
 }
 
 // hasEndDNDItem reports whether the End-DND row is present. Exposed for tests.

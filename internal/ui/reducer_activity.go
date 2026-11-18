@@ -157,6 +157,9 @@ func (a *App) activateUnopenableActivity(it core.ActivityItem) tea.Cmd {
 var reduceActivity reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 	switch m := msg.(type) {
 	case ActivityViewActivatedMsg:
+		if cmd, refused := a.refuseSlackOnly("Activity feed"); refused {
+			return cmd, true
+		}
 		a.view = ViewActivity
 		a.sidebar.SetActivityActive(true)
 		if !m.KeepFocus {

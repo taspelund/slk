@@ -259,6 +259,11 @@ type App struct {
 	// internal/ui/services.go. Defaulted to a no-op adapter in
 	// NewApp so call sites can dispatch without nil-checks.
 	channels core.ChannelService
+	// backend is the backend driving the App when it is not Slack
+	// (backend.go); linkResolver resolves its own links (nil: only
+	// Slack permalinks open in the app).
+	backend      Backend
+	linkResolver core.LinkResolver
 	// messages is the App's MessageService collaborator (send / edit /
 	// delete / mark-unread / permalink). See internal/ui/services.go.
 	// Defaulted to a no-op adapter in NewApp so call sites can dispatch
@@ -1204,6 +1209,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reduceFocus,
 		reduceSend,
 		reduceRemovePreview,
+		reduceInvites,
 		reduceActionPrompt,
 		reduceSlashCommand,
 		reduceChannels,
@@ -1736,6 +1742,10 @@ func (a *App) downloadFilesOfSelected() tea.Cmd {
 // inside slk (used for the picker's "[slk]" badge). Mirrors the
 // guards at the top of routeLink.
 func (a *App) linkOpensInApp(rawURL string) bool {
+	if t, ok := a.resolveBackendLink(rawURL); ok {
+		_, _, found := a.channels.Lookup(t.ChannelID)
+		return found
+	}
 	pl, ok := slackurl.Parse(rawURL)
 	if !ok || !a.permalinkBelongsToActiveWorkspace(pl) {
 		return false
@@ -2992,7 +3002,7 @@ func (a *App) pushChannelPicks() {
 	hidden := a.hiddenUsers()
 	picks := make([]channelpicker.Channel, 0, len(a.channelPickItems))
 	for _, ch := range a.channelPickItems {
-		if ch.Name == "" || core.IsHiddenPeerConversation(ch.Type, ch.DMUserID, hidden) {
+		if ch.Name == "" || ch.Invite || core.IsHiddenPeerConversation(ch.Type, ch.DMUserID, hidden) {
 			continue
 		}
 		picks = append(picks, channelpicker.Channel{

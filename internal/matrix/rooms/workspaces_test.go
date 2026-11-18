@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
 	"github.com/gammons/slk/internal/ui/sidebar"
@@ -89,5 +91,86 @@ func TestWorkspaces(t *testing.T) {
 	}
 	if ws := f.m.Workspaces(); ws[0].ID != "" || ws[1].ID != "@x" || ws[5].ID != f.roomAlias("!space1:x") {
 		t.Errorf("IDs = %q, %q, %q", ws[0].ID, ws[1].ID, ws[5].ID)
+	}
+}
+
+// TestWorkspacesInvites: a pending invite is a row of an "Invites"
+// section, first, in the workspace the room joins: a direct invite in
+// Direct Messages, a room a joined space lists in that space's, any other
+// in its server's (which the invite alone adds to the rail). Rows carry
+// Invite and the inviter's name and have no finder entry; an invited
+// space is not a row. Joining moves the row to its section.
+func TestWorkspacesInvites(t *testing.T) {
+	f := newFixture(t)
+	f.apply(world(t))
+	invite := func(resp *mautrix.RespSync, rid id.RoomID, from id.UserID, direct bool, extra ...*event.Event) {
+		evs := []*event.Event{
+			state(t, "m.room.member", string(me), from, map[string]any{"membership": "invite", "is_direct": direct}),
+			state(t, "m.room.member", string(from), from, map[string]any{"membership": "join", "displayname": "Carol"}),
+		}
+		resp.Rooms.Invite[rid] = &mautrix.SyncInvitedRoom{State: mautrix.SyncEventsList{Events: append(evs, extra...)}}
+	}
+	resp := newSync()
+	invite(resp, "!dminv:x", carol, true)
+	invite(resp, "!roominv:x", carol, false, state(t, "m.room.name", "", carol, map[string]any{"name": "party"}))
+	invite(resp, "!far:far.org", carol, false, state(t, "m.room.name", "", carol, map[string]any{"name": "faraway"}))
+	invite(resp, "!child:x", carol, false, state(t, "m.room.name", "", carol, map[string]any{"name": "kid"}))
+	invite(resp, "!spaceinv:x", carol, false, state(t, "m.room.create", "", carol, map[string]any{"type": "m.space"}))
+	join(resp, "!space2:x").State.Events = append(join(resp, "!space2:x").State.Events,
+		state(t, "m.space.child", "!child:x", alice, map[string]any{"via": []string{"x"}}))
+	f.apply(resp)
+
+	type row struct {
+		name, section, inviter string
+		invite                 bool
+	}
+	got := map[string][]row{}
+	firstSection := map[string]sidebar.SectionMeta{}
+	for _, ws := range f.m.Workspaces() {
+		for _, c := range ws.Channels {
+			if c.Invite || c.Section == "invites" {
+				got[ws.Name] = append(got[ws.Name], row{c.Name, c.Section, c.Inviter, c.Invite})
+			}
+		}
+		for _, fi := range ws.Finder {
+			if fi.Name == "Carol" || fi.Name == "party" || fi.Name == "faraway" || fi.Name == "kid" {
+				t.Errorf("%s: invite %q in the finder", ws.Name, fi.Name)
+			}
+		}
+		firstSection[ws.Name] = ws.Sections[0]
+	}
+	want := map[string][]row{
+		"Direct Messages": {{"Carol", "invites", "Carol", true}},
+		"x":               {{"party", "invites", "Carol", true}},
+		"far.org":         {{"faraway", "invites", "Carol", true}},
+		"Alpha":           {{"kid", "invites", "Carol", true}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("invite rows =\n%v\nwant\n%v", got, want)
+	}
+	inv := sidebar.SectionMeta{ID: "invites", Name: "Invites", Type: "invites"}
+	for _, ws := range []string{"Direct Messages", "x", "far.org", "Alpha"} {
+		if firstSection[ws] != inv {
+			t.Errorf("%s: first section %+v, want Invites", ws, firstSection[ws])
+		}
+	}
+	if firstSection["Engineering"] == inv {
+		t.Error("Engineering has an Invites section without invites")
+	}
+
+	// Joining the room invite moves it to Rooms.
+	resp = newSync()
+	jr := join(resp, "!roominv:x")
+	jr.State.Events = append(jr.State.Events, state(t, "m.room.name", "", carol, map[string]any{"name": "party"}))
+	f.apply(resp)
+	for _, ws := range f.m.Workspaces() {
+		if ws.Name != "x" {
+			continue
+		}
+		for _, c := range ws.Channels {
+			if c.Name == "party" && (c.Invite || c.Section != "rooms") {
+				t.Errorf("joined invite = %+v", c)
+			}
+		}
 	}
 }

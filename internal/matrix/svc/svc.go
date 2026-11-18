@@ -24,6 +24,7 @@
 //	files.go    fillFiles    uploads, downloads, images (WP-Media)
 //	profile.go  fillProfile  profiles, presence (WP-Profile)
 //	live.go     StartupMsgs, Run, SetNotifications: sync batches -> ui messages (WP-Live)
+//	links.go    linkResolver  matrix.to links -> rooms and messages (WP-UI)
 package svc
 
 import (
@@ -83,9 +84,13 @@ type ports struct {
 var errReadOnly = errors.New("read-only: this session does not change the account")
 
 // Install wires the backend's ports into app, as internal/demo's Install
-// does.
+// does. It also tells app it is driven by Matrix (ui.Backend), which
+// hides or refuses Slack's own features, and resolves matrix.to links
+// (links.go).
 func (b *Backend) Install(app *ui.App) {
 	p := b.ports()
+	app.SetBackend(ui.Backend{Name: "Matrix", ReadOnly: b.d.ReadOnly})
+	app.SetLinkResolver(linkResolver{b})
 	app.SetChannelService(core.NewChannelService(p.channels))
 	app.SetThreadService(core.NewThreadService(p.threads))
 	app.SetMessageService(core.NewMessageService(p.messages))

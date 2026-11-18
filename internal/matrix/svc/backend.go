@@ -20,6 +20,7 @@ import (
 type roomSource interface {
 	Room(alias string) (rooms.Room, bool)
 	RoomByID(room id.RoomID) (rooms.Room, bool)
+	RoomByCanonicalAlias(alias id.RoomAlias) (rooms.Room, bool)
 	Snapshot() rooms.Snapshot
 	DisplayName(room id.RoomID, user id.UserID) string
 	ThreadReceipt(room id.RoomID, thread id.EventID) (rooms.Receipt, bool)

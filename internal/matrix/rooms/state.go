@@ -14,11 +14,12 @@ import (
 	"github.com/gammons/slk/internal/text"
 )
 
-// Section IDs of the two built-in sections. A space's section ID is the
+// Section IDs of the built-in sections. A space's section ID is the
 // space's room alias ("C…"), which cannot collide with these.
 const (
-	sectionRooms = "rooms"
-	sectionDMs   = "dms"
+	sectionRooms   = "rooms"
+	sectionDMs     = "dms"
+	sectionInvites = "invites"
 )
 
 // maxHeroes is how many members name a room without a name, as the spec's
@@ -272,6 +273,12 @@ func (r *room) readState() core.ReadState {
 // sidebar reports whether the room is a sidebar row: joined, not a space.
 func (r *room) sidebar() bool {
 	return r.row.JoinState == store.Joined && !r.row.IsSpace
+}
+
+// invite reports whether the room is a pending invite the workspaces
+// list (Workspaces' "Invites" sections): invited, not a space.
+func (r *room) invite() bool {
+	return r.row.JoinState == store.Invited && !r.row.IsSpace
 }
 
 // sectionOf returns the section ID of r: dms for direct chats, else the
