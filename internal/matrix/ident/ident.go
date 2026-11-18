@@ -11,7 +11,18 @@
 //   - a backfilled (older) event sorts before the room's oldest TS (bumped
 //     to oldest-1µs when needed);
 //   - an event this client sent gets its TS when the send returns, so the
-//     same event arriving through /sync maps to the same TS.
+//     same event arriving through /sync maps to the same TS;
+//   - an inserted event (fetched, and not older than the room's oldest:
+//     a thread reply, an event after a /context target) is placed by its
+//     origin time among the stored events: TSForInsert takes the first
+//     free TS at or after its natural TS (the origin's milliseconds,
+//     tiebreak 0), so it lands in its own millisecond after the events
+//     already there, and so between its neighbours whenever their TS
+//     values are natural ones. Only a millisecond with all 1000 TS values
+//     taken pushes it on into the next free one.
+//     TSForInsertBetween does the same within bounds (strictly between
+//     two TS values), for filling a gap whose page order, not origin
+//     times, must decide the order.
 //
 // Aliases match ^[UC][A-Z0-9]{10}$: "U" for users, "C" for rooms. They are
 // derived from a hash of the Matrix ID, with a persisted collision check.
@@ -150,6 +161,101 @@ func (m *Mapper) TSForBackfill(ctx context.Context, room id.RoomID, ev id.EventI
 // through TSForLive.
 func (m *Mapper) TSForSent(ctx context.Context, room id.RoomID, ev id.EventID, sentAt time.Time) (string, error) {
 	return m.allocate(ctx, room, ev, sentAt, later)
+}
+
+// ErrNoRoom is returned by TSForInsertBetween when no TS is free between
+// its bounds.
+var ErrNoRoom = errors.New("ident: no free timestamp between the bounds")
+
+// maxInsertScan bounds the candidates TSForInsert and TSForInsertBetween
+// look at before giving up.
+const maxInsertScan = 100_000
+
+// TSForInsert returns the TS of ev, an event placed by its origin time
+// among the room's stored events, minting one if ev has none yet: the
+// first TS at or after origin's natural TS (milliseconds × 1000) that no
+// event of room holds. See the package doc.
+func (m *Mapper) TSForInsert(ctx context.Context, room id.RoomID, ev id.EventID, origin time.Time) (string, error) {
+	return m.insert(ctx, room, ev, origin, -1, maxTSMicros+1)
+}
+
+// TSForInsertBetween is TSForInsert with the result strictly between
+// after and before ("" for no bound on that side). The natural TS is
+// clamped into the bounds; the first free TS at or after it below before
+// is taken, else the nearest free one below it above after. It returns
+// ErrNoRoom when every TS between the bounds is taken. An event already
+// mapped returns its TS, wherever that is.
+func (m *Mapper) TSForInsertBetween(ctx context.Context, room id.RoomID, ev id.EventID, origin time.Time, after, before string) (string, error) {
+	lo, hi := int64(-1), int64(maxTSMicros+1)
+	if after != "" {
+		v, err := parseTS(after)
+		if err != nil {
+			return "", err
+		}
+		lo = v
+	}
+	if before != "" {
+		v, err := parseTS(before)
+		if err != nil {
+			return "", err
+		}
+		hi = v
+	}
+	return m.insert(ctx, room, ev, origin, lo, hi)
+}
+
+// insert mints ev's TS strictly between lo and hi (microseconds, which
+// may be one past the representable range), scanning up from the clamped
+// natural TS, then down from it.
+func (m *Mapper) insert(ctx context.Context, room id.RoomID, ev id.EventID, origin time.Time, lo, hi int64) (string, error) {
+	if room == "" || ev == "" {
+		return "", fmt.Errorf("ident: TS for event %q in room %q: empty ID", ev, room)
+	}
+	if ts, ok, err := m.p.LookupTS(ctx, room, ev); err != nil || ok {
+		return ts, err
+	}
+	mu := m.roomLock(room)
+	mu.Lock()
+	defer mu.Unlock()
+	if ts, ok, err := m.p.LookupTS(ctx, room, ev); err != nil || ok {
+		return ts, err
+	}
+	if lo+1 > hi-1 {
+		return "", fmt.Errorf("ident: TS for %s in %s: %w", ev, room, ErrNoRoom)
+	}
+	start := min(max(origin.UnixMilli(), 0), maxTSMicros/1000) * 1000
+	start = min(max(start, lo+1), hi-1)
+	// try reports a TS or nil to go on. A candidate another event holds
+	// (seen, or refused by PutTS) is skipped.
+	try := func(c int64) (string, bool, error) {
+		ts := formatTS(c)
+		if _, taken, err := m.p.LookupEvent(ctx, room, ts); err != nil || taken {
+			return "", false, err
+		}
+		switch err := m.p.PutTS(ctx, room, ev, ts); {
+		case err == nil:
+			return ts, true, nil
+		case errors.Is(err, ErrTSTaken):
+			return "", false, nil
+		default:
+			return "", false, err
+		}
+	}
+	scanned := 0
+	for c := start; c < hi && scanned < maxInsertScan; c, scanned = c+1, scanned+1 {
+		if ts, ok, err := try(c); err != nil || ok {
+			return ts, err
+		}
+	}
+	for c := start - 1; c > lo && scanned < maxInsertScan; c, scanned = c-1, scanned+1 {
+		if ts, ok, err := try(c); err != nil || ok {
+			return ts, err
+		}
+	}
+	if scanned >= maxInsertScan {
+		return "", fmt.Errorf("ident: TS for %s in %s: %d candidates taken", ev, room, scanned)
+	}
+	return "", fmt.Errorf("ident: TS for %s in %s: %w", ev, room, ErrNoRoom)
 }
 
 // TS returns the TS already mapped to ev, without minting.
