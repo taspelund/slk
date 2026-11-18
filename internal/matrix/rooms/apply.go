@@ -341,11 +341,6 @@ func (b *batch) applyState(r *room, evt *event.Event) error {
 		var c event.JoinRulesEventContent
 		parseContent(evt, &c)
 		r.joinRule = c.JoinRule
-		if r.row.JoinState != store.Invited {
-			if err := b.m.ss.SetJoinRules(b.ctx, r.row.ID, &c); err != nil {
-				return err
-			}
-		}
 	case event.StateCreate.Type:
 		var c struct {
 			Type string `json:"type"`
@@ -527,9 +522,7 @@ func (b *batch) storeEvent(r *room, evt *event.Event, ts string, live bool) erro
 		return err
 	}
 	b.timeline[rid] = true
-	if live && ts > r.row.LastEventTS {
-		r.row.LastEventTS = ts
-	} else if r.row.LastEventTS == "" {
+	if ts > r.row.LastEventTS {
 		r.row.LastEventTS = ts
 	}
 	// first is true the first time the event's real type is known: it
@@ -876,6 +869,7 @@ func (b *batch) finish() (Changes, error) {
 			// room the account has joined, been invited to or left.
 			r.row.JoinState = store.Left
 		}
+		r.saveInputs()
 		if pub := published[rid]; pub != nil && rowEqual(pub.row, r.row) {
 			continue
 		}
@@ -942,7 +936,7 @@ func sidebarSection(r *room, get func(id.RoomID) *room, edges map[id.RoomID]map[
 // rowEqual compares two rows, ignoring UpdatedAt.
 func rowEqual(a, b store.Room) bool {
 	a.UpdatedAt, b.UpdatedAt = time.Time{}, time.Time{}
-	return a == b
+	return reflect.DeepEqual(a, b)
 }
 
 // buildGlobal returns every known user's global display name: the

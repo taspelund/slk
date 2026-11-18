@@ -413,11 +413,13 @@ func TestBackfillMintsOlderTSInOrder(t *testing.T) {
 	join(resp, rid).Timeline.Events = []*event.Event{txt(t, "$live", alice, 10_000, "live")}
 	f.apply(resp)
 
-	// Newest first, as /messages?dir=b returns them; the origins are out of
-	// order and later than the live event, so they are bumped.
+	// Newest first, as /messages?dir=b returns them. $b3 is older than
+	// the oldest stored event, so it and everything after it in the page
+	// go before the oldest, $b2 too although its origin is later than
+	// $b3's (bumped).
 	evts := []*event.Event{
-		txt(t, "$b3", bob, 20_000, "three"),
-		txt(t, "$b2", bob, 5_000, "two"),
+		txt(t, "$b3", bob, 9_000, "three"),
+		txt(t, "$b2", bob, 9_500, "two"),
 		mk(t, "m.room.message", "$e", bob, 4_000, nil, map[string]any{
 			"msgtype": "m.text", "body": "* one!", "m.new_content": map[string]any{"body": "one!"},
 			"m.relates_to": map[string]any{"rel_type": "m.replace", "event_id": "$b1"},

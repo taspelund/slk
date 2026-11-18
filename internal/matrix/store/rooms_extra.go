@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"time"
 
 	"maunium.net/go/mautrix/id"
 )
@@ -102,4 +104,37 @@ func (s *Store) Relations(ctx context.Context, room id.RoomID, target id.EventID
 	return s.queryEvents(ctx, `SELECT `+eventColumns+` FROM slkmx_events
 		WHERE room_id = $1 AND relates_to_event = $2 AND ($3 = '' OR rel_type = $3) ORDER BY ts`,
 		room, target, relType)
+}
+
+// Gap returns the gap with ID gapID.
+func (s *Store) Gap(ctx context.Context, gapID int64) (Gap, bool, error) {
+	g := Gap{ID: gapID}
+	var created int64
+	err := s.DB.QueryRow(ctx, `SELECT room_id, prev_batch, after_ts, created_at FROM slkmx_gaps
+		WHERE gap_id = $1`, gapID).Scan(&g.RoomID, &g.PrevBatch, &g.AfterTS, &created)
+	if err != nil {
+		return Gap{}, false, ignoreNoRows(err)
+	}
+	g.CreatedAt = time.UnixMilli(created)
+	return g, true, nil
+}
+
+// UpdateGap moves gap gapID: the events before afterTS are missing back
+// to wherever paginating from prevBatch reaches.
+func (s *Store) UpdateGap(ctx context.Context, gapID int64, prevBatch, afterTS string) error {
+	_, err := s.DB.Exec(ctx, `UPDATE slkmx_gaps SET prev_batch = $1, after_ts = $2 WHERE gap_id = $3`,
+		prevBatch, afterTS, gapID)
+	return err
+}
+
+// TSBefore returns the newest TS mapped in room (ident's map, which
+// includes events not stored as rows) that sorts before ts.
+func (s *Store) TSBefore(ctx context.Context, room id.RoomID, ts string) (string, bool, error) {
+	var out sql.NullString
+	err := s.DB.QueryRow(ctx, `SELECT max(ts) FROM slkmx_ts_map WHERE room_id = $1 AND ts < $2`,
+		room, ts).Scan(&out)
+	if err != nil || !out.Valid {
+		return "", false, err
+	}
+	return out.String, true, nil
 }

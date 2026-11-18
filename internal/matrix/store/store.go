@@ -33,9 +33,10 @@
 // version table, slkmx_version, and SQL files under upgrades/ with
 // dbutil's "-- vN -> vM: message" headers. Every table, index and trigger
 // is prefixed slkmx_, so it cannot clash with mautrix's crypto_* and mx_*
-// names. To change the schema, add upgrades/NN-name.sql ("-- v1 -> v2:
-// ...") and update 00-latest-revision.sql to the new shape, as mautrix
-// does.
+// names. To change the schema, add upgrades/NN-name.sql ("-- v2 -> v3:
+// ...") and update 00-latest-revision.sql to the new shape and its header
+// to "-- v0 -> vN", as mautrix does. testdata/v1 is the v1 schema, which
+// TestMigrateFromV1 upgrades.
 //
 // # Schema
 //
