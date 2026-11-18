@@ -31,14 +31,15 @@ const HomeName = "Direct Messages"
 // both. Rooms whose only spaces form a cycle with no top count as in no
 // space.
 //
-// Pending invites (invited rooms that are not spaces) are rows of an
-// "Invites" section (ID "invites", type "invites"), first in the
-// workspace the room would be in once joined: a direct invite in Direct
-// Messages, a room under a joined space in that space's top-level
+// Pending invites, to rooms and to spaces, are rows of an "Invites"
+// section (ID "invites", type "invites"), first in the workspace the
+// room would be in once joined: a direct invite in Direct Messages, a
+// room or space under a joined space in that space's top-level
 // workspace, any other in its server's (which an invite alone can add to
-// the rail). Their ChannelItem has Invite set and Inviter the inviter's
-// display name, when known (an invite synced in this process, or a
-// direct one); they have no Finder entry.
+// the rail). Their ChannelItem has Invite set, InviteSpace for a space,
+// and Inviter the inviter's display name when known (the invite's
+// sender is stored with the room); they have no Finder entry. A joined
+// space is a rail workspace, not a row.
 type Workspace struct {
 	ID       string
 	Name     string
@@ -189,7 +190,7 @@ func (m *Model) workspacesLocked() []Workspace {
 				SectionOrder: rank[e.section] + 1, DMUserID: dm,
 			}
 			if e.section == sectionInvites {
-				item.Invite = true
+				item.Invite, item.InviteSpace = true, r.row.IsSpace
 				if r.inviter != "" {
 					item.Inviter = displayName(r, m.global, r.inviter)
 				}

@@ -2,6 +2,8 @@ package rooms
 
 import (
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"maunium.net/go/mautrix"
@@ -98,8 +100,9 @@ func TestWorkspaces(t *testing.T) {
 // section, first, in the workspace the room joins: a direct invite in
 // Direct Messages, a room a joined space lists in that space's, any other
 // in its server's (which the invite alone adds to the rail). Rows carry
-// Invite and the inviter's name and have no finder entry; an invited
-// space is not a row. Joining moves the row to its section.
+// Invite and the inviter's name, also after a restart, and have no
+// finder entry; an invited space is a row marked InviteSpace. Joining
+// moves the row to its section.
 func TestWorkspacesInvites(t *testing.T) {
 	f := newFixture(t)
 	f.apply(world(t))
@@ -115,38 +118,50 @@ func TestWorkspacesInvites(t *testing.T) {
 	invite(resp, "!roominv:x", carol, false, state(t, "m.room.name", "", carol, map[string]any{"name": "party"}))
 	invite(resp, "!far:far.org", carol, false, state(t, "m.room.name", "", carol, map[string]any{"name": "faraway"}))
 	invite(resp, "!child:x", carol, false, state(t, "m.room.name", "", carol, map[string]any{"name": "kid"}))
-	invite(resp, "!spaceinv:x", carol, false, state(t, "m.room.create", "", carol, map[string]any{"type": "m.space"}))
+	invite(resp, "!spaceinv:x", carol, false, state(t, "m.room.create", "", carol, map[string]any{"type": "m.space"}),
+		state(t, "m.room.name", "", carol, map[string]any{"name": "club"}))
 	join(resp, "!space2:x").State.Events = append(join(resp, "!space2:x").State.Events,
 		state(t, "m.space.child", "!child:x", alice, map[string]any{"via": []string{"x"}}))
 	f.apply(resp)
 
 	type row struct {
 		name, section, inviter string
-		invite                 bool
+		invite, space          bool
 	}
-	got := map[string][]row{}
-	firstSection := map[string]sidebar.SectionMeta{}
-	for _, ws := range f.m.Workspaces() {
-		for _, c := range ws.Channels {
-			if c.Invite || c.Section == "invites" {
-				got[ws.Name] = append(got[ws.Name], row{c.Name, c.Section, c.Inviter, c.Invite})
+	rows := func() (map[string][]row, map[string]sidebar.SectionMeta) {
+		got := map[string][]row{}
+		firstSection := map[string]sidebar.SectionMeta{}
+		for _, ws := range f.m.Workspaces() {
+			for _, c := range ws.Channels {
+				if c.Invite || c.Section == "invites" {
+					got[ws.Name] = append(got[ws.Name], row{c.Name, c.Section, c.Inviter, c.Invite, c.InviteSpace})
+				}
 			}
-		}
-		for _, fi := range ws.Finder {
-			if fi.Name == "Carol" || fi.Name == "party" || fi.Name == "faraway" || fi.Name == "kid" {
-				t.Errorf("%s: invite %q in the finder", ws.Name, fi.Name)
+			for _, fi := range ws.Finder {
+				if fi.Name == "Carol" || fi.Name == "party" || fi.Name == "faraway" || fi.Name == "kid" || fi.Name == "club" {
+					t.Errorf("%s: invite %q in the finder", ws.Name, fi.Name)
+				}
 			}
+			firstSection[ws.Name] = ws.Sections[0]
 		}
-		firstSection[ws.Name] = ws.Sections[0]
+		for _, rs := range got {
+			slices.SortFunc(rs, func(a, b row) int { return strings.Compare(a.name, b.name) })
+		}
+		return got, firstSection
 	}
+	got, firstSection := rows()
 	want := map[string][]row{
-		"Direct Messages": {{"Carol", "invites", "Carol", true}},
-		"x":               {{"party", "invites", "Carol", true}},
-		"far.org":         {{"faraway", "invites", "Carol", true}},
-		"Alpha":           {{"kid", "invites", "Carol", true}},
+		"Direct Messages": {{"Carol", "invites", "Carol", true, false}},
+		"x":               {{"club", "invites", "Carol", true, true}, {"party", "invites", "Carol", true, false}},
+		"far.org":         {{"faraway", "invites", "Carol", true, false}},
+		"Alpha":           {{"kid", "invites", "Carol", true, false}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("invite rows =\n%v\nwant\n%v", got, want)
+	}
+	f.m = f.reopen()
+	if after, _ := rows(); !reflect.DeepEqual(after, want) {
+		t.Errorf("invite rows after a restart =\n%v\nwant\n%v", after, want)
 	}
 	inv := sidebar.SectionMeta{ID: "invites", Name: "Invites", Type: "invites"}
 	for _, ws := range []string{"Direct Messages", "x", "far.org", "Alpha"} {

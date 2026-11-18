@@ -276,6 +276,38 @@ func TestInviteJoin(t *testing.T) {
 	}
 }
 
+// TestInviteJoinSpace: joining an invite to a space drops its row and
+// says the space is on the rail; it does not open it as a conversation.
+func TestInviteJoinSpace(t *testing.T) {
+	a, calls := inviteApp(t, nil, nil)
+	a.sidebar.UpsertItem(sidebar.ChannelItem{ID: "C8", Name: "club", Type: "private", Section: "invites",
+		Invite: true, Inviter: "Carol", InviteSpace: true})
+	a.SetChannels(a.sidebar.Items())
+	a.Update(ChannelSelectedMsg{ID: "C8", Name: "club", Type: "private"})
+	if !dialogShows(a, "Carol invited you to the space club.") {
+		t.Fatalf("space invite prompt:\n%s", a.confirmPrompt.View())
+	}
+	for _, m := range pressKey(t, a, keyPress('j')) {
+		if sel, ok := m.(ChannelSelectedMsg); ok && sel.ID == "C8" {
+			t.Errorf("the joined space was opened as a conversation")
+		}
+	}
+	if len(*calls) != 1 || (*calls)[0] != "join C8" {
+		t.Fatalf("calls = %v", *calls)
+	}
+	if _, ok := a.inviteItem("C8"); ok || a.activeChannelID != "C1" {
+		t.Errorf("space row kept or opened: active %q", a.activeChannelID)
+	}
+	for _, it := range a.sidebar.Items() {
+		if it.ID == "C8" {
+			t.Errorf("joined space still a sidebar row: %+v", it)
+		}
+	}
+	if got := statusbarText(a); !strings.Contains(got, "Joined the space club") {
+		t.Errorf("status bar = %q", got)
+	}
+}
+
 func TestInviteJoinFails(t *testing.T) {
 	a, _ := inviteApp(t, errors.New("M_FORBIDDEN"), nil)
 	selectInvite(t, a, keyPress('j'))

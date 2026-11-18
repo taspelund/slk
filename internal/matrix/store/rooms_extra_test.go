@@ -139,12 +139,13 @@ func TestMigrateFromV1(t *testing.T) {
 		t.Fatalf("Open v1: %v", err)
 	}
 	defer s.Close()
-	if v := versionOf(t, s.DB, VersionTable); v != 2 || v != len(upgradeTable) {
-		t.Fatalf("version after upgrade = %d, want 2", v)
+	if v := versionOf(t, s.DB, VersionTable); v != 3 || v != len(upgradeTable) {
+		t.Fatalf("version after upgrade = %d, want 3", v)
 	}
 	r, ok, err := s.GetRoom(ctx, "!r:x")
 	if err != nil || !ok || r.Name != "Alice" || r.Kind != RoomDM || r.DMUserID != "@alice:x" ||
-		r.InputsSaved || r.HasNameEvent || r.Heroes != nil || r.DirectUsers != nil || r.HaveMemberCounts {
+		r.InputsSaved || r.HasNameEvent || r.Heroes != nil || r.DirectUsers != nil || r.HaveMemberCounts ||
+		r.Inviter != "" || r.AltAliases != nil {
 		t.Fatalf("migrated room = %+v %v %v", r, ok, err)
 	}
 	// The upgraded schema is the latest revision's.
@@ -180,6 +181,7 @@ func TestRoomInputsRoundTrip(t *testing.T) {
 		ID: "!r:x", Kind: RoomGroupDM, JoinState: Joined, InputsSaved: true, HasNameEvent: true,
 		Heroes: []id.UserID{"@b:x", "@a:x"}, HaveMemberCounts: true, JoinedMemberCount: 3, InvitedMemberCount: 1,
 		JoinRule: "invite", DirectUsers: []id.UserID{"@a:x", "@b:x"},
+		Inviter: "@c:x", AltAliases: []id.RoomAlias{"#b:x", "#a:y"},
 	}
 	if err := s.PutRoom(ctx, in); err != nil {
 		t.Fatal(err)

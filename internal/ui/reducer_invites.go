@@ -3,8 +3,9 @@
 // Invite reducer for App.Update (invites.go):
 //
 //	inviteAnsweredMsg - Join or Decline answered. A join makes the row
-//	                    an ordinary one and opens it; a decline drops
-//	                    the row. Either way the backend's live updates
+//	                    an ordinary one and opens it (a space's row is
+//	                    dropped: the space joins the rail); a decline
+//	                    drops the row. Either way the backend's live updates
 //	                    follow with the authoritative sidebar. A failure
 //	                    is a toast.
 package ui
@@ -27,6 +28,12 @@ var reduceInvites reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 	if m.join {
 		switch r := m.result.(type) {
 		case ChannelJoinedMsg:
+			if item.InviteSpace {
+				if here {
+					a.dropInviteRow(item.ID)
+				}
+				return toastWithClear(a, "Joined the space "+item.Name+"; it's on the workspace rail", 4*time.Second), true
+			}
 			if !here {
 				return nil, true
 			}
@@ -57,17 +64,24 @@ var reduceInvites reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		return toastWithClear(a, "Couldn't decline the invite to "+item.Name+": "+errText(r.Err), 4*time.Second), true
 	}
 	if here {
-		if _, still := a.inviteItem(item.ID); still {
-			var kept []sidebar.ChannelItem
-			for _, it := range a.sidebar.Items() {
-				if it.ID != item.ID {
-					kept = append(kept, it)
-				}
-			}
-			a.SetChannels(kept)
-		}
+		a.dropInviteRow(item.ID)
 	}
 	return toastWithClear(a, "Declined the invite to "+item.Name, 3*time.Second), true
+}
+
+// dropInviteRow removes the sidebar's invite row id, until the backend's
+// live updates send the sidebar without it.
+func (a *App) dropInviteRow(id string) {
+	if _, still := a.inviteItem(id); !still {
+		return
+	}
+	var kept []sidebar.ChannelItem
+	for _, it := range a.sidebar.Items() {
+		if it.ID != id {
+			kept = append(kept, it)
+		}
+	}
+	a.SetChannels(kept)
 }
 
 // errText is err's message, "unknown error" for nil.

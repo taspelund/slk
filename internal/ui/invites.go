@@ -57,10 +57,15 @@ func inviteText(item sidebar.ChannelItem) string {
 		return item.Inviter + " invited you to a direct chat."
 	case direct:
 		return "You're invited to a direct chat with " + item.Name + "."
-	case item.Inviter != "":
-		return item.Inviter + " invited you to " + item.Name + "."
 	}
-	return "You're invited to " + item.Name + "."
+	what := item.Name
+	if item.InviteSpace {
+		what = "the space " + item.Name
+	}
+	if item.Inviter != "" {
+		return item.Inviter + " invited you to " + what + "."
+	}
+	return "You're invited to " + what + "."
 }
 
 // openInvitePrompt asks whether to join or decline the invite item. A

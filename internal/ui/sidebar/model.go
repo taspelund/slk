@@ -86,9 +86,12 @@ type ChannelItem struct {
 	// joined (a Matrix invite; Slack has none). Selecting it asks to
 	// join or decline instead of opening it (internal/ui/invites.go).
 	// Inviter is who invited them, "" when unknown; the row shows it
-	// after the name unless it is the name.
-	Invite  bool
-	Inviter string
+	// after the name unless it is the name. InviteSpace says the invite
+	// is to a space (a group of rooms), which joining adds to the rail
+	// rather than opening.
+	Invite      bool
+	Inviter     string
+	InviteSpace bool
 }
 
 // IsVisiblyUnread reports whether this channel should render the unread
@@ -2239,6 +2242,9 @@ func (m *Model) buildCache(width int) {
 		// stays inside the loop.
 		const rowChromeExcludingTrailer = 6 // cursor(2) + prefix(3) + space(1)
 		name := item.Name
+		if item.InviteSpace {
+			name += " (space)"
+		}
 		if item.Invite && item.Inviter != "" && item.Inviter != item.Name {
 			name += " · " + item.Inviter
 		}

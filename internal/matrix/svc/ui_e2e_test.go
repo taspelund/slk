@@ -18,6 +18,7 @@ import (
 	"github.com/gammons/slk/internal/matrix/rooms"
 	"github.com/gammons/slk/internal/ui"
 	"github.com/gammons/slk/internal/ui/sidebar"
+	"github.com/gammons/slk/internal/ui/workspace"
 )
 
 // sidebarRow waits for a SectionsRefreshedMsg of team in which the row
@@ -39,7 +40,7 @@ func (w *writeE2E) sidebarRow(what, team, alias string, ok func(row *sidebar.Cha
 
 // TestInvitesAndLinksAgainstHomeserver: invites show in the Invites
 // section of the workspace they belong in, joining one moves it to its
-// section and declining one drops it; matrix.to links (the permalinks
+// section (a space to the rail) and declining one drops it; matrix.to links (the permalinks
 // Y copies) resolve to the room, message and thread from the store, also
 // for a room outside the workspace on screen.
 func TestInvitesAndLinksAgainstHomeserver(t *testing.T) {
@@ -80,6 +81,28 @@ func TestInvitesAndLinksAgainstHomeserver(t *testing.T) {
 	bob.WaitMember(t, dm, aliceID, event.MembershipLeave)
 	w.sidebarRow("the declined invite gone", w.b.teamID, dmAlias, func(r *sidebar.ChannelItem) bool { return r == nil })
 
+	// A space invite is a row too, marked as a space; joining puts the
+	// space on the rail.
+	space, err := bob.Client.CreateRoom(ctx, &mautrix.ReqCreateRoom{
+		Name: "club", Invite: []id.UserID{aliceID},
+		CreationContent: map[string]any{"type": "m.space"},
+	})
+	if err != nil {
+		t.Fatalf("create space: %v", err)
+	}
+	spaceAlias := w.room(space.RoomID, nil).Alias
+	_, spaceSrv, _ := strings.Cut(string(space.RoomID), ":")
+	w.sidebarRow("the space invite", w.b.teamOf("@"+spaceSrv), spaceAlias, func(r *sidebar.ChannelItem) bool {
+		return isInvite(r) && r.InviteSpace && r.Name == "club"
+	})
+	if got := w.p.channels.Join(ids.ChannelID(spaceAlias), "club"); got != (ui.ChannelJoinedMsg{ID: spaceAlias, Name: "club"}) {
+		t.Fatalf("Join space = %#v", got)
+	}
+	w.wait("the space on the rail", func(msg tea.Msg) bool {
+		set, ok := msg.(ui.WorkspacesSetMsg)
+		return ok && slices.ContainsFunc(set.Items, func(it workspace.WorkspaceItem) bool { return it.Name == "club" })
+	})
+
 	// A room by its canonical alias, alice not invited yet: links to it
 	// stay in the browser until she has joined.
 	aliasName := "linked" + string(aliceID.Localpart())
@@ -99,6 +122,21 @@ func TestInvitesAndLinksAgainstHomeserver(t *testing.T) {
 		t.Fatalf("join linked: %v", err)
 	}
 	linkedAlias := w.room(linked, func(r rooms.Room) bool { return r.Section != "" }).Alias
+
+	// An alternative alias added later resolves too.
+	altAlias := id.NewRoomAlias("alt"+aliasName, aliceID.Homeserver())
+	if _, err := bob.Client.CreateAlias(ctx, altAlias, linked); err != nil {
+		t.Fatalf("create alt alias: %v", err)
+	}
+	if _, err := bob.Client.SendStateEvent(ctx, linked, event.StateCanonicalAlias, "", map[string]any{
+		"alias": roomAlias, "alt_aliases": []id.RoomAlias{altAlias},
+	}); err != nil {
+		t.Fatalf("set alt_aliases: %v", err)
+	}
+	e2e.Eventually(t, "the alt alias resolves", func() bool {
+		got, ok := links.ResolveLink(altAlias.URI().MatrixToURL())
+		return ok && got.ChannelID == ids.ChannelID(linkedAlias)
+	})
 
 	t.Run("matrix.to links", func(t *testing.T) {
 		w.b.fetch(alias, nil) // the UI opens it

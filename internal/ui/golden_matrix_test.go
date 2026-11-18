@@ -17,7 +17,8 @@ func (s staticSections) Ready() bool                                 { return tr
 func (s staticSections) OrderedSlackSections() []sidebar.SectionMeta { return s }
 
 // matrixGoldenApp is the golden fixture as a Matrix workspace: an
-// Invites section (a room invite with its inviter, one without) above
+// Invites section (a room invite with its inviter, one without, a space
+// invite) above
 // Rooms, and no Activity row.
 func matrixGoldenApp(t *testing.T) *App {
 	t.Helper()
@@ -30,6 +31,7 @@ func matrixGoldenApp(t *testing.T) *App {
 	a.SetChannels([]sidebar.ChannelItem{
 		{ID: "C7", Name: "party", Type: "private", Section: "invites", Invite: true, Inviter: "Carol"},
 		{ID: "C8", Name: "book-club", Type: "channel", Section: "invites", Invite: true},
+		{ID: "C9", Name: "Oxide", Type: "private", Section: "invites", Invite: true, Inviter: "Dana", InviteSpace: true},
 		{ID: "C1", Name: "general", Type: "channel", Section: "rooms"},
 		{ID: "C2", Name: "engineering", Type: "channel", Section: "rooms"},
 	})
@@ -45,7 +47,7 @@ func TestGolden_Matrix(t *testing.T) {
 		{"matrix_invites_huddle_refused", func(a *App) {
 			a.focusedPanel = PanelMessages
 			a.Update(keyPress('H'))
-		}, []string{"Invites", "party · Carol", "book-club", "Rooms", "Matrix has no huddles"}},
+		}, []string{"Invites", "party · Carol", "book-club", "Oxide (space) · Dana", "Rooms", "Matrix has no huddles"}},
 		{"matrix_invite_prompt", func(a *App) {
 			a.Update(ChannelSelectedMsg{ID: "C7", Name: "party", Type: "private"})
 		}, []string{"Invitation", "Carol invited you to party.", "Join", "Decline", "Cancel"}},

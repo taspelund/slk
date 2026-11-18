@@ -70,12 +70,17 @@ type Room struct {
 	// DirectUsers are the users m.direct lists the room under, sorted;
 	// empty when the room is not in m.direct.
 	DirectUsers []id.UserID
+	// Inviter is who sent the account's pending invite ("" when not
+	// invited or unknown), saved with the inputs.
+	Inviter id.UserID
+	// AltAliases are the m.room.canonical_alias event's alt_aliases.
+	AltAliases []id.RoomAlias
 }
 
 const roomColumns = `room_id, canonical_alias, name, topic, kind, is_space, encrypted, join_state,
 	dm_user_id, avatar_mxc, last_event_ts, highlight_count, notification_count, marked_unread, updated_at,
 	inputs_saved, has_name_event, name_event, heroes, have_member_counts, joined_member_count,
-	invited_member_count, join_rule, direct_users`
+	invited_member_count, join_rule, direct_users, inviter, alt_aliases`
 
 // PutRoom inserts r or replaces every column of the stored row, and sets
 // its UpdatedAt to now.
@@ -88,9 +93,13 @@ func (s *Store) PutRoom(ctx context.Context, r Room) error {
 	if err != nil {
 		return err
 	}
+	alt, err := jsonList(r.AltAliases)
+	if err != nil {
+		return err
+	}
 	_, err = s.DB.Exec(ctx, `INSERT INTO slkmx_rooms (`+roomColumns+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-			$16, $17, $18, $19, $20, $21, $22, $23, $24)
+			$16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
 		ON CONFLICT (room_id) DO UPDATE SET
 			canonical_alias = excluded.canonical_alias, name = excluded.name, topic = excluded.topic,
 			kind = excluded.kind, is_space = excluded.is_space, encrypted = excluded.encrypted,
@@ -103,27 +112,34 @@ func (s *Store) PutRoom(ctx context.Context, r Room) error {
 			have_member_counts = excluded.have_member_counts,
 			joined_member_count = excluded.joined_member_count,
 			invited_member_count = excluded.invited_member_count,
-			join_rule = excluded.join_rule, direct_users = excluded.direct_users`,
+			join_rule = excluded.join_rule, direct_users = excluded.direct_users,
+			inviter = excluded.inviter, alt_aliases = excluded.alt_aliases`,
 		r.ID, r.CanonicalAlias, r.Name, r.Topic, r.Kind, r.IsSpace, r.Encrypted, r.JoinState,
 		r.DMUserID, r.AvatarMXC, r.LastEventTS, r.HighlightCount, r.NotificationCount, r.MarkedUnread,
 		time.Now().UnixMilli(),
 		r.InputsSaved, r.HasNameEvent, r.NameEvent, heroes, r.HaveMemberCounts, r.JoinedMemberCount,
-		r.InvitedMemberCount, r.JoinRule, direct)
+		r.InvitedMemberCount, r.JoinRule, direct, r.Inviter, alt)
 	return err
 }
 
 // userList is how a list of users is stored: a JSON array.
-func userList(users []id.UserID) (string, error) {
-	if len(users) == 0 {
+func userList(users []id.UserID) (string, error) { return jsonList(users) }
+
+// parseUserList reads a userList value; an empty list is nil.
+func parseUserList(s string) ([]id.UserID, error) { return parseJSONList[id.UserID](s) }
+
+// jsonList is how a list of IDs is stored: a JSON array.
+func jsonList[T any](list []T) (string, error) {
+	if len(list) == 0 {
 		return "[]", nil
 	}
-	b, err := json.Marshal(users)
+	b, err := json.Marshal(list)
 	return string(b), err
 }
 
-// parseUserList reads a userList value; an empty list is nil.
-func parseUserList(s string) ([]id.UserID, error) {
-	var out []id.UserID
+// parseJSONList reads a jsonList value; an empty list is nil.
+func parseJSONList[T any](s string) ([]T, error) {
+	var out []T
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
 		return nil, err
 	}
@@ -160,12 +176,12 @@ func (s *Store) ListRooms(ctx context.Context) ([]Room, error) {
 func scanRoom(row dbutil.Scannable) (Room, error) {
 	var r Room
 	var updated int64
-	var heroes, direct string
+	var heroes, direct, alt string
 	err := row.Scan(&r.ID, &r.CanonicalAlias, &r.Name, &r.Topic, &r.Kind, &r.IsSpace, &r.Encrypted,
 		&r.JoinState, &r.DMUserID, &r.AvatarMXC, &r.LastEventTS, &r.HighlightCount, &r.NotificationCount,
 		&r.MarkedUnread, &updated,
 		&r.InputsSaved, &r.HasNameEvent, &r.NameEvent, &heroes, &r.HaveMemberCounts, &r.JoinedMemberCount,
-		&r.InvitedMemberCount, &r.JoinRule, &direct)
+		&r.InvitedMemberCount, &r.JoinRule, &direct, &r.Inviter, &alt)
 	if err != nil {
 		return Room{}, err
 	}
@@ -175,6 +191,9 @@ func scanRoom(row dbutil.Scannable) (Room, error) {
 	}
 	if r.DirectUsers, err = parseUserList(direct); err != nil {
 		return Room{}, fmt.Errorf("store: direct users of %s: %w", r.ID, err)
+	}
+	if r.AltAliases, err = parseJSONList[id.RoomAlias](alt); err != nil {
+		return Room{}, fmt.Errorf("store: alt aliases of %s: %w", r.ID, err)
 	}
 	return r, nil
 }

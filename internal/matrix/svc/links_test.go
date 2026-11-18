@@ -11,14 +11,16 @@ import (
 	"github.com/gammons/slk/internal/ids"
 )
 
-// TestResolveLink: matrix.to links to a joined room resolve to the room,
+// TestResolveLink: matrix.to links to a joined room, by ID, canonical
+// alias or alt alias, resolve to the room,
 // its message, or a thread reply with its root, from the store alone; a
 // link to an unknown or invited room, or not to matrix.to, does not.
 func TestResolveLink(t *testing.T) {
 	h := newHarness(t, nil)
 	resp := lsync()
 	ljoin(resp, general).State.Events = []*event.Event{
-		lstate(t, "m.room.canonical_alias", "", alice, map[string]any{"alias": "#general:example.org"}),
+		lstate(t, "m.room.canonical_alias", "", alice, map[string]any{"alias": "#general:example.org",
+			"alt_aliases": []string{"#lobby:other.org"}}),
 	}
 	resp.Rooms.Invite["!invited:example.org"] = &mautrix.SyncInvitedRoom{State: mautrix.SyncEventsList{Events: []*event.Event{
 		lstate(t, "m.room.member", string(self), alice, map[string]any{"membership": "invite"}),
@@ -52,6 +54,7 @@ func TestResolveLink(t *testing.T) {
 		{"alias", "https://matrix.to/#/%23general:example.org", core.LinkTarget{ChannelID: ch}, true},
 		{"message", to(string(general), string(root.ID)), core.LinkTarget{ChannelID: ch, MessageTS: ids.MessageTS(rootTS)}, true},
 		{"message by alias", to("#general:example.org", string(root.ID)), core.LinkTarget{ChannelID: ch, MessageTS: ids.MessageTS(rootTS)}, true},
+		{"alt alias", to("#lobby:other.org", string(root.ID)), core.LinkTarget{ChannelID: ch, MessageTS: ids.MessageTS(rootTS)}, true},
 		{"thread reply", to(string(general), string(reply.ID)),
 			core.LinkTarget{ChannelID: ch, MessageTS: ids.MessageTS(replyTS), ThreadTS: ids.ThreadTS(rootTS)}, true},
 		{"edit opens its message", to(string(general), string(edit.ID)), core.LinkTarget{ChannelID: ch, MessageTS: ids.MessageTS(rootTS)}, true},

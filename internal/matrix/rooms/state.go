@@ -119,6 +119,10 @@ func (r *room) saveInputs() {
 	if r.direct {
 		row.DirectUsers = nilIfEmpty(r.directUsers)
 	}
+	row.Inviter = ""
+	if row.JoinState == store.Invited {
+		row.Inviter = r.inviter
+	}
 }
 
 // loadInputs sets the name and kind inputs from a row that has them
@@ -136,6 +140,9 @@ func (r *room) loadInputs() {
 	r.direct, r.directUsers = len(row.DirectUsers) > 0, slices.Clone(row.DirectUsers)
 	if row.JoinState == store.Invited && row.Kind == store.RoomDM {
 		r.inviteDirect, r.inviter = true, row.DMUserID
+	}
+	if row.Inviter != "" {
+		r.inviter = row.Inviter
 	}
 }
 
@@ -276,9 +283,9 @@ func (r *room) sidebar() bool {
 }
 
 // invite reports whether the room is a pending invite the workspaces
-// list (Workspaces' "Invites" sections): invited, not a space.
+// list (Workspaces' "Invites" sections), a room's or a space's.
 func (r *room) invite() bool {
-	return r.row.JoinState == store.Invited && !r.row.IsSpace
+	return r.row.JoinState == store.Invited
 }
 
 // sectionOf returns the section ID of r: dms for direct chats, else the

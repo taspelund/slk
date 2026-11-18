@@ -25,7 +25,7 @@ const linkTimeout = 2 * time.Second
 //	https://matrix.to/#/#alias:server/$event              or the reply in
 //	                                                      its thread
 //
-// An alias is the room's canonical alias. A room that is unknown, not
+// An alias is the room's canonical alias or one of its alt_aliases. A room that is unknown, not
 // joined or a space is not resolved (the UI opens the link in the
 // browser). An event the store does not hold, or a thread reply whose
 // root has no TS, resolves to the room alone; an edit or a reaction to
@@ -47,7 +47,7 @@ func (l linkResolver) ResolveLink(raw string) (core.LinkTarget, bool) {
 	case '!':
 		room, ok = b.rooms.RoomByID(uri.RoomID())
 	case '#':
-		room, ok = b.rooms.RoomByCanonicalAlias(uri.RoomAlias())
+		room, ok = b.rooms.RoomByAlias(uri.RoomAlias())
 	}
 	if !ok || room.Section == "" {
 		// Section is "" for a room that is not a sidebar row: an

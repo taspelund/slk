@@ -319,10 +319,11 @@ func (b *batch) applyState(r *room, evt *event.Event) error {
 		r.row.Topic = c.Topic
 	case event.StateCanonicalAlias.Type:
 		var c struct {
-			Alias id.RoomAlias `json:"alias"`
+			Alias      id.RoomAlias   `json:"alias"`
+			AltAliases []id.RoomAlias `json:"alt_aliases"`
 		}
 		parseContent(evt, &c)
-		r.row.CanonicalAlias = c.Alias
+		r.row.CanonicalAlias, r.row.AltAliases = c.Alias, slices.Clone(c.AltAliases)
 	case event.StateRoomAvatar.Type:
 		var c struct {
 			URL id.ContentURIString `json:"url"`

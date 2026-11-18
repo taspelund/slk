@@ -723,11 +723,10 @@ func (m *Model) RoomByID(room id.RoomID) (Room, bool) {
 	return m.roomLocked(room)
 }
 
-// RoomByCanonicalAlias returns the room whose m.room.canonical_alias
-// alias is (#name:server), a sidebar room first when several claim it
-// (a room and the one it was upgraded from). Alternative aliases are not
-// kept, so they are not found.
-func (m *Model) RoomByCanonicalAlias(alias id.RoomAlias) (Room, bool) {
+// RoomByAlias returns the room alias (#name:server) names, through its
+// m.room.canonical_alias event's alias or alt_aliases, a sidebar room
+// first when several claim it (a room and the one it was upgraded from).
+func (m *Model) RoomByAlias(alias id.RoomAlias) (Room, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if alias == "" {
@@ -735,7 +734,7 @@ func (m *Model) RoomByCanonicalAlias(alias id.RoomAlias) (Room, bool) {
 	}
 	var found id.RoomID
 	for rid, r := range m.rooms {
-		if r.row.CanonicalAlias != alias {
+		if r.row.CanonicalAlias != alias && !slices.Contains(r.row.AltAliases, alias) {
 			continue
 		}
 		if r.sidebar() {

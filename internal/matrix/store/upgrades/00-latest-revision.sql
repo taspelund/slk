@@ -1,4 +1,4 @@
--- v0 -> v2: Latest revision
+-- v0 -> v3: Latest revision
 -- The /sync position. One row (id 0), created here so reads never miss.
 CREATE TABLE slkmx_sync_state (
 	id         INTEGER PRIMARY KEY CHECK (id = 0),
@@ -37,7 +37,9 @@ CREATE TABLE slkmx_rooms (
 	joined_member_count  INTEGER NOT NULL DEFAULT 0,
 	invited_member_count INTEGER NOT NULL DEFAULT 0,
 	join_rule            TEXT    NOT NULL DEFAULT '',
-	direct_users         TEXT    NOT NULL DEFAULT '[]'
+	direct_users         TEXT    NOT NULL DEFAULT '[]',
+	inviter              TEXT    NOT NULL DEFAULT '',
+	alt_aliases          TEXT    NOT NULL DEFAULT '[]'
 );
 
 -- m.space.child edges: room_id is in space space_id, ordered by
