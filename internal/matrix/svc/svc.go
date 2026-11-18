@@ -1,0 +1,111 @@
+// Package svc implements slk's internal/core ports for a Matrix account and
+// turns what the account syncs into live ui messages, the same contract
+// internal/demo implements for the demo.
+//
+// It reads the account database (store) and the room model (rooms), and
+// makes requests through the session's client. It never writes the room or
+// timeline tables itself: events it fetches go through rooms.Model.Backfill
+// and events it sends come back through /sync.
+//
+// The port implementations are split by work package, each filling its part
+// of a ports value:
+//
+//	read.go     fillRead     channel history, threads, unread, search, avatars (WP-Read)
+//	write.go    fillWrite    send, edit, delete, reactions, receipts, joins (WP-Write)
+//	files.go    fillFiles    uploads, downloads, images (WP-Media)
+//	profile.go  fillProfile  profiles, presence (WP-Profile)
+//	live.go     StartupMsgs, Run: sync batches -> ui messages (WP-Live)
+package svc
+
+import (
+	"github.com/gammons/slk/internal/core"
+	"github.com/gammons/slk/internal/matrix/ident"
+	"github.com/gammons/slk/internal/matrix/rooms"
+	"github.com/gammons/slk/internal/matrix/session"
+	"github.com/gammons/slk/internal/matrix/store"
+	"github.com/gammons/slk/internal/ui"
+)
+
+// Deps are what a Backend needs. Account is the account name given to
+// --matrix; it names the workspace in the rail.
+type Deps struct {
+	Account string
+	Session *session.Session
+	Store   *store.Store
+	IDs     *ident.Mapper
+	Rooms   *rooms.Model
+}
+
+// Backend is one Matrix account behind slk's UI. Its workspace ID (the
+// TeamID the UI keys state by) is "M" plus the account's user alias.
+type Backend struct {
+	d      Deps
+	teamID string
+}
+
+// New returns the backend for an account.
+func New(d Deps) *Backend {
+	panic("svc: New not implemented (lead, with WP-Read)")
+}
+
+// TeamID is the workspace ID the UI knows this account by.
+func (b *Backend) TeamID() string { return b.teamID }
+
+// ports collects the implementations each work package fills in. Ports
+// left unset fall back to internal/core's documented no-op adapters.
+type ports struct {
+	channels  core.ChannelServiceFuncs
+	threads   core.ThreadServiceFuncs
+	messages  core.MessageServiceFuncs
+	search    core.SearchServiceFuncs
+	profiles  core.ProfileServiceFuncs
+	reactions core.ReactionService
+	unread    core.UnreadService
+	workspace core.WorkspaceService
+	avatars   core.AvatarService
+	files     core.FileService
+	presence  core.PresenceService
+	images    core.ImageFetcher
+}
+
+// Install wires the backend's ports into app, as internal/demo's Install
+// does.
+func (b *Backend) Install(app *ui.App) {
+	var p ports
+	b.fillRead(&p)
+	b.fillWrite(&p)
+	b.fillFiles(&p)
+	b.fillProfile(&p)
+	app.SetChannelService(core.NewChannelService(p.channels))
+	app.SetThreadService(core.NewThreadService(p.threads))
+	app.SetMessageService(core.NewMessageService(p.messages))
+	app.SetSearchService(core.NewSearchService(p.search))
+	app.SetProfileService(core.NewProfileService(p.profiles))
+	if p.reactions != nil {
+		app.SetReactionService(p.reactions)
+	}
+	if p.unread != nil {
+		app.SetUnreadService(p.unread)
+	}
+	if p.workspace != nil {
+		app.SetWorkspaceService(p.workspace)
+	}
+	if p.avatars != nil {
+		app.SetAvatarService(p.avatars)
+	}
+	if p.files != nil {
+		app.SetFileService(p.files)
+	}
+	if p.presence != nil {
+		app.SetPresenceService(p.presence)
+	}
+	if p.images != nil {
+		app.SetImageFetcher(p.images)
+	}
+}
+
+// The fill functions below are replaced by each work package's file.
+
+func (b *Backend) fillWrite(p *ports)   {}
+func (b *Backend) fillFiles(p *ports)   {}
+func (b *Backend) fillProfile(p *ports) {}
