@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"image"
 	"io"
 	"os"
 	"os/signal"
@@ -22,7 +21,6 @@ import (
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/debuglog"
 	"github.com/gammons/slk/internal/export"
-	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/matrix/ident"
 	"github.com/gammons/slk/internal/matrix/rooms"
 	"github.com/gammons/slk/internal/matrix/session"
@@ -30,7 +28,6 @@ import (
 	"github.com/gammons/slk/internal/matrix/svc"
 	"github.com/gammons/slk/internal/notify"
 	"github.com/gammons/slk/internal/ui"
-	"github.com/gammons/slk/internal/ui/imgrender"
 	"github.com/gammons/slk/internal/ui/messages"
 	"github.com/gammons/slk/internal/ui/styles"
 )
@@ -247,25 +244,11 @@ func runMatrix(account string, readOnly bool) error {
 		Stat:       os.Stat,
 		SaveThread: export.SaveThread,
 	}))
-	// Inline images draw as half blocks, which work in every terminal
-	// and multiplexer. Kitty and sixel need main.go's terminal probes and
-	// frame output, which are not shared with this path yet.
-	pxW, pxH, _ := startupCellPixels(imgpkg.ProtoHalfBlock)
-	imgpkg.SetCellPixels(pxW, pxH)
-	imgCtx := func(send func(tea.Msg)) imgrender.ImageContext {
-		return imgrender.ImageContext{
-			Protocol:   imgpkg.ProtoHalfBlock,
-			Fetcher:    b.ImageFetcher(),
-			CellPixels: image.Pt(pxW, pxH),
-			MaxRows:    cfg.Appearance.MaxImageRows,
-			MaxCols:    cfg.Appearance.MaxImageCols,
-			SendMsg:    send,
-		}
-	}
-	app.SetImageProtocol(imgpkg.ProtoHalfBlock)
-	app.SetImageContext(imgCtx(nil))
-	p := tea.NewProgram(app)
-	app.SetImageContext(imgCtx(p.Send))
+	// Inline images and emoji draw the way they do on Slack: kitty,
+	// sixel or half blocks, whichever this terminal supports.
+	images := setupTerminalImages(cfg, app, b.ImageFetcher())
+	p := tea.NewProgram(app, images.ProgramOptions...)
+	images.install(app, p.Send)
 	// Presence toasts and loaded member lists reach the UI outside Run.
 	b.SetUISend(p.Send)
 
