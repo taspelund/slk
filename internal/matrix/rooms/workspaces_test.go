@@ -14,8 +14,9 @@ import (
 )
 
 // TestWorkspaces: Home holds the DMs; rooms in no space are grouped by
-// server (the account's own first, a room ID without one falling back to
-// its canonical alias); each top-level space holds the rooms under it at
+// server (the account's own first; the canonical alias's server, for a
+// chat named after its members the account's own when a member is on it,
+// else the room ID's); each top-level space holds the rooms under it at
 // any depth, a sub-space's rooms in the sub-space's section; a room in two
 // top-level spaces is in both, and spaces in a cycle with no top leave
 // their rooms grouped by server.
@@ -55,6 +56,19 @@ func TestWorkspaces(t *testing.T) {
 	join(resp, "!v12room").State.Events = append(join(resp, "!v12room").State.Events,
 		state(t, "m.room.name", "", alice, map[string]any{"name": "aliased"}),
 		state(t, "m.room.canonical_alias", "", alice, map[string]any{"alias": "#aliased:alias.org"}))
+	// A room created on another server whose people gave it an address
+	// on x is x's.
+	join(resp, "!fed:other.org").State.Events = append(join(resp, "!fed:other.org").State.Events,
+		state(t, "m.room.name", "", alice, map[string]any{"name": "federated"}),
+		state(t, "m.room.canonical_alias", "", alice, map[string]any{"alias": "#federated:x"}))
+	// A chat with neither a name nor an address (named after its
+	// members) created elsewhere is x's when a member is on x; one whose
+	// members are all elsewhere stays with its ID's server.
+	chat := join(resp, "!chat:other.org")
+	chat.Summary.Heroes = []id.UserID{"@far:other.org", carol}
+	chat.State.Events = append(chat.State.Events,
+		state(t, "m.room.member", string(carol), carol, map[string]any{"membership": "join", "displayname": "Carol"}))
+	join(resp, "!chat2:other.org").Summary.Heroes = []id.UserID{"@far:other.org"}
 	f.apply(resp)
 
 	type row struct{ name, section string }
@@ -74,9 +88,9 @@ func TestWorkspaces(t *testing.T) {
 	plat := f.roomAlias("!platform:x")
 	want := map[string][]row{
 		"Direct Messages": {{"Alice", "dms"}, {"Bob, Carol", "dms"}},
-		"x":               {{"general", "rooms"}, {"looped", "rooms"}, {"secret", "rooms"}},
+		"x":               {{"far, Carol", "rooms"}, {"federated", "rooms"}, {"general", "rooms"}, {"looped", "rooms"}, {"secret", "rooms"}},
 		"alias.org":       {{"aliased", "rooms"}},
-		"other.org":       {{"elsewhere", "rooms"}},
+		"other.org":       {{"elsewhere", "rooms"}, {"Empty Room (was far)", "rooms"}},
 		"Alpha":           {{"both", "rooms"}, {"tie", "rooms"}},
 		// eng: Platform's order "a" beats Engineering's "b".
 		"Engineering": {{"eng", plat}, {"plat", plat}, {"both", "rooms"}, {"tie", "rooms"}},

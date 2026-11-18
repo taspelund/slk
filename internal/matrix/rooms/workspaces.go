@@ -22,7 +22,9 @@ const HomeName = "Direct Messages"
 // Messages". Then the joined rooms in no space, one workspace per server
 // (ID "@" plus the server name, named by it; the account's own server
 // first, then by name), in section "Rooms": a room's server is the one in
-// its ID, else in its canonical alias, else none ("Other rooms"). Then
+// its canonical alias, else (a chat named after its members) the
+// account's own when a member is on it, else the one in its ID, else none
+// ("Other rooms"); see serverOf. Then
 // each top-level space (a joined space with no joined parent space), by
 // name, then alias, with ID its room alias: the rooms under it, at any
 // depth, each in the section of its nearest parent space below the top
@@ -130,7 +132,7 @@ func (m *Model) workspacesLocked() []Workspace {
 		}
 		ts := tops(r.row.ID, map[id.RoomID]bool{})
 		if len(ts) == 0 {
-			srv := serverOf(r)
+			srv := serverOf(r, m.self.Homeserver())
 			byServer[srv] = append(byServer[srv], entry{r, section(sectionRooms)})
 			continue
 		}
@@ -261,13 +263,20 @@ func (m *Model) workspacesLocked() []Workspace {
 }
 
 // serverOf is the server a room in no space is listed under: the one in
-// its ID, else in its canonical alias (room IDs from room version 12 on
-// name no server), else "".
-func serverOf(r *room) string {
-	if _, srv, ok := strings.Cut(string(r.row.ID), ":"); ok && srv != "" {
+// its canonical alias (#name:server, the address its people chose, which
+// may differ from the server it was created on); for a chat with neither
+// a name nor an address (named after its members), own (the account's
+// server) when one of its members is on it; else the one in its ID (room
+// IDs from room version 12 on name none); else "".
+func serverOf(r *room, own string) string {
+	if _, srv, ok := strings.Cut(string(r.row.CanonicalAlias), ":"); ok && srv != "" {
 		return srv
 	}
-	if _, srv, ok := strings.Cut(string(r.row.CanonicalAlias), ":"); ok {
+	if r.row.CanonicalAlias == "" && (r.explicitName == nil || *r.explicitName == "") &&
+		slices.ContainsFunc(r.heroes, func(u id.UserID) bool { return u.Homeserver() == own }) {
+		return own
+	}
+	if _, srv, ok := strings.Cut(string(r.row.ID), ":"); ok && srv != "" {
 		return srv
 	}
 	return ""
