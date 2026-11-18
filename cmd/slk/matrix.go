@@ -210,6 +210,7 @@ func runMatrix(account string) error {
 		return err
 	}
 	b := svc.New(svc.Deps{
+		Dir:             dir,
 		Account:         account,
 		Session:         sess,
 		Store:           st,

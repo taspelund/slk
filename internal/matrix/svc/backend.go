@@ -65,8 +65,13 @@ type Backend struct {
 	threadCounts map[id.EventID]int
 	threadJoined map[id.EventID]bool
 
-	// live is the live side's state (live.go).
-	live *liveState
+	// live is the live side's state (live.go); write, files and
+	// profile are the other work packages' state, each defined and
+	// built in that package's file.
+	live    *liveState
+	write   *writeState
+	files   *filesState
+	profile *profileState
 }
 
 // New returns the backend for an account.
@@ -90,6 +95,9 @@ func newBackend(d Deps, rs roomSource, cli *mautrix.Client, self id.UserID) *Bac
 		threadCounts: map[id.EventID]int{},
 		threadJoined: map[id.EventID]bool{},
 		live:         newLiveState(),
+		write:        newWriteState(),
+		files:        newFilesState(),
+		profile:      newProfileState(),
 	}
 	if b.tsFormat == "" {
 		b.tsFormat = defaultTimestampFormat

@@ -36,11 +36,14 @@ import (
 )
 
 // Deps are what a Backend needs. Account is the account name given to
-// --matrix; it names the workspace in the rail. TimestampFormat is the
+// --matrix; it names the workspace in the rail. Dir is the account's
+// directory (session.json, matrix.db), where WP-Media keeps its file
+// cache. TimestampFormat is the
 // Go time layout of a message's header time, [appearance]
 // timestamp_format ("" for its default, "3:04 PM").
 type Deps struct {
 	Account         string
+	Dir             string
 	Session         *session.Session
 	Store           *store.Store
 	IDs             *ident.Mapper
@@ -103,9 +106,3 @@ func (b *Backend) Install(app *ui.App) {
 		app.SetImageFetcher(p.images)
 	}
 }
-
-// The fill functions below are replaced by each work package's file.
-
-func (b *Backend) fillWrite(p *ports)   {}
-func (b *Backend) fillFiles(p *ports)   {}
-func (b *Backend) fillProfile(p *ports) {}
