@@ -26,6 +26,7 @@
 //	live.go     StartupMsgs, Run, SetNotifications: sync batches -> ui messages (WP-Live)
 //	links.go    linkResolver  matrix.to links -> rooms and messages (WP-UI)
 //	verify.go   installVerification  emoji device verification <-> ui (WP-Verify)
+//	receipts.go receiptService  other users' read markers and :seen (WP-Receipts)
 package svc
 
 import (
@@ -86,12 +87,13 @@ var errReadOnly = errors.New("read-only: this session does not change the accoun
 
 // Install wires the backend's ports into app, as internal/demo's Install
 // does. It also tells app it is driven by Matrix (ui.Backend), which
-// hides or refuses Slack's own features, and resolves matrix.to links
-// (links.go).
+// hides or refuses Slack's own features, resolves matrix.to links
+// (links.go) and says who has read a message (receipts.go).
 func (b *Backend) Install(app *ui.App) {
 	p := b.ports()
 	app.SetBackend(ui.Backend{Name: "Matrix", ReadOnly: b.d.ReadOnly})
 	app.SetLinkResolver(linkResolver{b})
+	app.SetReadReceiptService(receiptService{b})
 	app.SetChannelService(core.NewChannelService(p.channels))
 	app.SetThreadService(core.NewThreadService(p.threads))
 	app.SetMessageService(core.NewMessageService(p.messages))

@@ -297,6 +297,15 @@ type (
 		UserID    string
 		Emoji     string
 	}
+	// ReadMarkersMovedMsg says other users' read markers moved in one
+	// timeline of ChannelID: the channel's own (ThreadTS "") or the
+	// thread ThreadTS. A backend with read receipts (Matrix) sends it for
+	// conversations on screen; see core.MessageItem.SeenBy.
+	ReadMarkersMovedMsg struct {
+		ChannelID string
+		ThreadTS  string
+		Moves     []SeenMove
+	}
 	ReactionSentMsg struct {
 		// Identifies the optimistic update to roll back if the API
 		// call failed. Remove is the operation that was attempted, so
@@ -664,6 +673,14 @@ type threadFetchDebounceMsg struct {
 // from a refresh that is still wanted.
 type threadsListFetchMsg struct {
 	teamID string
+}
+
+// SeenMove is one user's read marker moving (ReadMarkersMovedMsg): it
+// leaves the message it was under and goes under the message with TS,
+// or only leaves when TS is "" (or names a message not loaded).
+type SeenMove struct {
+	UserID string
+	TS     string
 }
 
 // MessageSentMsg is returned after a message is successfully sent.

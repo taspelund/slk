@@ -68,6 +68,8 @@ import (
 //	                         tombstone
 //	ReactionAdded/Removed    ReactionAddedMsg/ReactionRemovedMsg (Slack
 //	                         shortcode, as items.go names reactions)
+//	others' receipts         ReadMarkersMovedMsg per timeline they read, for
+//	                         the read markers (receipts.go)
 //	own receipt              ChannelMarkedRemoteMsg + ReadStateChangedMsg, or
 //	                         for a thread ThreadMarkedRemoteMsg +
 //	                         ThreadsListDirtyMsg; the UI tells slk's own marks
@@ -502,6 +504,9 @@ func (r *liveRun) changes(ctx context.Context, ch rooms.Changes, notifyNew, decr
 			railDot(room.Alias)
 		}
 	}
+
+	// Other users' read markers (receipts.go).
+	r.sendMarkers(ctx, ch.Receipts)
 
 	// Typing, in room order so what is sent does not depend on map order.
 	for _, rid := range slices.Sorted(maps.Keys(ch.Typing)) {

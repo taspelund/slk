@@ -69,6 +69,10 @@ type Backend struct {
 	// localRead is how far each room (by alias) was read in this
 	// process without telling the server: read-only mode's MarkRead.
 	localRead map[string]string
+	// openThread is the thread of each room the UI last opened (Fetch
+	// or CacheRead), which an unthreaded receipt's live markers also
+	// go to (receipts.go).
+	openThread map[id.RoomID]id.EventID
 
 	// ws is the account's workspaces (workspaces.go).
 	ws workspaces
@@ -105,6 +109,7 @@ func newBackend(d Deps, rs roomSource, cli *mautrix.Client, self id.UserID) *Bac
 		threadCounts: map[id.EventID]int{},
 		threadJoined: map[id.EventID]bool{},
 		localRead:    map[string]string{},
+		openThread:   map[id.RoomID]id.EventID{},
 		live:         newLiveState(),
 		write:        newWriteState(),
 		files:        newFilesState(),

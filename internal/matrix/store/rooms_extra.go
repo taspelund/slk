@@ -53,21 +53,8 @@ func (s *Store) SpaceParents(ctx context.Context) ([]SpaceParent, error) {
 
 // UserReceipts returns every receipt of user, by room then thread.
 func (s *Store) UserReceipts(ctx context.Context, user id.UserID) ([]Receipt, error) {
-	rows, err := s.DB.Query(ctx, `SELECT room_id, thread_id, event_id, ts FROM slkmx_receipts
+	return s.queryReceipts(ctx, `SELECT `+receiptColumns+` FROM slkmx_receipts
 		WHERE user_id = $1 ORDER BY room_id, thread_id`, user)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Receipt
-	for rows.Next() {
-		r := Receipt{UserID: user}
-		if err := rows.Scan(&r.RoomID, &r.ThreadID, &r.EventID, &r.TS); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
 }
 
 // unreadTypes are the event types that can make a room unread: messages,

@@ -53,6 +53,7 @@ var commands = map[string]commandFunc{
 	"compact":  cmdCompact,
 	"version":  cmdVersion,
 	"verify":   cmdVerify,
+	"seen":     cmdSeen,
 }
 
 // cmdVersion toasts the running build's version and short commit (see

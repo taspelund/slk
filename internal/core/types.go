@@ -63,6 +63,15 @@ type MessageItem struct {
 	// for every other message, and for a huddle message whose room was
 	// never captured).
 	HuddleRoom *HuddleRoom
+
+	// SeenBy are the users (IDs) whose read marker sits under this
+	// message in the timeline it was loaded for (the channel's, or a
+	// thread's for a reply): this is the newest message each of them
+	// has read. Newest reader first; never the current user or the
+	// message's sender. Set by a backend with read receipts (Matrix);
+	// nil on Slack. Treated as immutable: change it by replacing the
+	// slice.
+	SeenBy []string
 }
 
 // ApplyChange takes the content fields of c, a message_changed echo of

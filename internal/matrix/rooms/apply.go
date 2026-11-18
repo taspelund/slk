@@ -696,16 +696,25 @@ func (b *batch) applyReceipts(r *room, evt *event.Event) error {
 				if err != nil {
 					return err
 				}
+				var readAt int64
+				if at := users[user].Timestamp; !at.IsZero() {
+					readAt = at.UnixMilli()
+				}
 				if user == b.m.self {
-					if err := b.ownReceipt(r, thread, ev, ts); err != nil {
+					if err := b.ownReceipt(r, thread, ev, ts, readAt); err != nil {
 						return err
 					}
 					continue
 				}
-				if err := b.m.st.PutReceipt(b.ctx, store.Receipt{
-					RoomID: rid, ThreadID: thread, UserID: user, EventID: ev, TS: ts,
-				}); err != nil {
+				rec := store.Receipt{RoomID: rid, ThreadID: thread, UserID: user, EventID: ev, TS: ts, ReadAt: readAt}
+				moved, err := b.m.st.AdvanceReceipt(b.ctx, rec)
+				if err != nil {
 					return err
+				}
+				if moved {
+					b.ch.Receipts = append(b.ch.Receipts, UserReceipt{
+						Room: rid, User: user, Thread: thread, Event: ev, TS: ts,
+					})
 				}
 			}
 		}
@@ -716,12 +725,12 @@ func (b *batch) applyReceipts(r *room, evt *event.Event) error {
 // ownReceipt moves the account's receipt in r's thread to ev, unless it
 // is already there or later. A receipt on an event without a TS (older
 // than anything stored) only replaces one that has no TS either.
-func (b *batch) ownReceipt(r *room, thread string, ev id.EventID, ts string) error {
+func (b *batch) ownReceipt(r *room, thread string, ev id.EventID, ts string, readAt int64) error {
 	cur, ok := r.receipts[thread]
 	if ok && (cur.EventID == ev || (ts == "" && cur.TS != "") || (ts != "" && cur.TS != "" && ts <= cur.TS)) {
 		return nil
 	}
-	rec := store.Receipt{RoomID: r.row.ID, ThreadID: thread, UserID: b.m.self, EventID: ev, TS: ts}
+	rec := store.Receipt{RoomID: r.row.ID, ThreadID: thread, UserID: b.m.self, EventID: ev, TS: ts, ReadAt: readAt}
 	if err := b.m.st.PutReceipt(b.ctx, rec); err != nil {
 		return err
 	}

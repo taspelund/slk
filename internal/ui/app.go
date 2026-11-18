@@ -264,6 +264,11 @@ type App struct {
 	// Slack permalinks open in the app).
 	backend      Backend
 	linkResolver core.LinkResolver
+	// readReceipts answers :seen (nil: the backend has no read
+	// receipts); hideReadMarkers is [general] read_receipts off
+	// (read_receipts.go).
+	readReceipts    core.ReadReceiptService
+	hideReadMarkers bool
 	// messages is the App's MessageService collaborator (send / edit /
 	// delete / mark-unread / permalink). See internal/ui/services.go.
 	// Defaulted to a no-op adapter in NewApp so call sites can dispatch
@@ -1214,6 +1219,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reduceInvites,
 		reduceActionPrompt,
 		reduceVerify,
+		reduceReadReceipts,
 		reduceSlashCommand,
 		reduceChannels,
 		reduceLinks,

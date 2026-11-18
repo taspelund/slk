@@ -71,6 +71,7 @@ type KeyMap struct {
 	HelpCommand         key.Binding
 	Version             key.Binding
 	Verify              key.Binding
+	SeenBy              key.Binding
 	SaveThread          key.Binding
 	RespondButtons      key.Binding
 	ListReactions       key.Binding
@@ -170,6 +171,7 @@ func DefaultKeyMap() KeyMap {
 		HelpCommand:    key.NewBinding(key.WithHelp(":help", "show keybindings and : commands")),
 		Version:        key.NewBinding(key.WithHelp(":version", "show the running build's version")),
 		Verify:         key.NewBinding(key.WithHelp(":verify", "verify this device with another of your devices (Matrix)")),
+		SeenBy:         key.NewBinding(key.WithHelp(":seen", "who has read the selected message (Matrix)")),
 		SaveThread:     key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "save thread")),
 		RespondButtons: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "respond to message buttons")),
 		ListReactions:  key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "list reactions")),

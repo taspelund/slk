@@ -789,3 +789,52 @@ func TestLeaveAndInvite(t *testing.T) {
 		t.Fatalf("invite = %+v %v", r, ok)
 	}
 }
+
+// TestOthersReceiptsAreReported: other users' receipts that move forward
+// are in Changes.Receipts with their thread and read time stored; one
+// that would move back, and the account's own, are not.
+func TestOthersReceiptsAreReported(t *testing.T) {
+	f := newFixture(t)
+	const rid = id.RoomID("!r:x")
+	receipts := func(rs ...[4]string) *mautrix.RespSync { // user, event, thread, ts
+		content := map[string]map[string]map[string]any{}
+		for _, r := range rs {
+			c := map[string]any{"ts": json.Number(r[3])}
+			if r[2] != "" {
+				c["thread_id"] = r[2]
+			}
+			if content[r[1]] == nil {
+				content[r[1]] = map[string]map[string]any{"m.read": {}}
+			}
+			content[r[1]]["m.read"][r[0]] = c
+		}
+		resp := newSync()
+		join(resp, rid).Ephemeral.Events = []*event.Event{mk(t, "m.receipt", "", "", 0, nil, content)}
+		return resp
+	}
+	resp := newSync()
+	join(resp, rid).Timeline.Events = []*event.Event{txt(t, "$1", alice, 1000, "one"), txt(t, "$2", alice, 2000, "two")}
+	f.apply(resp)
+	t1, t2 := f.ts(rid, "$1"), f.ts(rid, "$2")
+
+	ch := f.apply(receipts([4]string{string(bob), "$2", "main", "5000"}, [4]string{string(me), "$2", "", "5000"}))
+	if want := []UserReceipt{{Room: rid, User: bob, Thread: "main", Event: "$2", TS: t2}}; !reflect.DeepEqual(ch.Receipts, want) {
+		t.Fatalf("Receipts = %+v, want %+v", ch.Receipts, want)
+	}
+	if r, _, _ := f.st.GetReceipt(context.Background(), rid, "main", bob); r.ReadAt != 5000 {
+		t.Fatalf("stored read time = %d", r.ReadAt)
+	}
+	// Back to $1: dropped.
+	if ch := f.apply(receipts([4]string{string(bob), "$1", "main", "6000"})); len(ch.Receipts) != 0 {
+		t.Fatalf("an older receipt moved: %+v", ch.Receipts)
+	}
+	if r, _, _ := f.st.GetReceipt(context.Background(), rid, "main", bob); r.EventID != "$2" || r.ReadAt != 5000 {
+		t.Fatalf("after an older receipt: %+v", r)
+	}
+	// Unthreaded on $1 is another receipt (another thread_id); on an
+	// event not stored, it has no TS yet.
+	ch = f.apply(receipts([4]string{string(bob), "$1", "", "7000"}, [4]string{string(alice), "$later", "", "7000"}))
+	if want := []UserReceipt{{Room: rid, User: bob, Event: "$1", TS: t1}, {Room: rid, User: alice, Event: "$later"}}; !reflect.DeepEqual(ch.Receipts, want) {
+		t.Fatalf("Receipts = %+v, want %+v", ch.Receipts, want)
+	}
+}

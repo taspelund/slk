@@ -140,6 +140,7 @@ func (b *Backend) fetch(alias string, markRead func(ids.ChannelID, ids.MessageTS
 		debuglog.Cache("matrix fetch: room=%s: %v", room, err)
 		return ui.MessagesLoadedMsg{ChannelID: alias} // nil: keep what is shown
 	}
+	b.withMarkers(ctx, room, "", msgs, "")
 	b.mu.Lock()
 	b.synced[alias] = time.Now()
 	b.mu.Unlock()
@@ -166,6 +167,8 @@ func (b *Backend) fetchOlder(alias, oldest string) core.Msg {
 	if out.Messages, err = b.page(ctx, room, oldest); err != nil {
 		debuglog.Cache("matrix fetch older: room=%s before=%s: %v", room, oldest, err)
 	}
+	// The page ends where the messages shown begin (oldest).
+	b.withMarkers(ctx, room, "", out.Messages, oldest)
 	return out
 }
 
@@ -510,7 +513,16 @@ func (b *Backend) around(ctx context.Context, room id.RoomID, ts string) ([]core
 	if err != nil {
 		return nil, err
 	}
-	return b.items(ctx, room, append(before, after...))
+	items, err := b.items(ctx, room, append(before, after...))
+	if err != nil || len(items) == 0 {
+		return items, err
+	}
+	upper, err := b.nextShownTS(ctx, room, items[len(items)-1].TS)
+	if err != nil {
+		return nil, err
+	}
+	b.withMarkers(ctx, room, "", items, upper)
+	return items, nil
 }
 
 // readCache is ChannelService.ReadCache: the newest stored page, without
@@ -529,6 +541,7 @@ func (b *Backend) readCache(alias string) []core.MessageItem {
 	if err != nil || len(items) == 0 {
 		return nil
 	}
+	b.withMarkers(ctx, room, "", items, "")
 	return items
 }
 
@@ -590,6 +603,8 @@ func (b *Backend) threadItems(ctx context.Context, room id.RoomID, root id.Event
 		}
 		replies = append(replies, it)
 	}
+	b.withMarkers(ctx, room, root, replies, "")
+	b.threadOpened(room, root)
 	return parent, found, replies, nil
 }
 

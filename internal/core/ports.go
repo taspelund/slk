@@ -459,6 +459,29 @@ type LinkTarget struct {
 	ThreadTS  ids.ThreadTS
 }
 
+// ReadReceiptService says who has read a message, for a backend with
+// read receipts (Matrix). Slack has none (nil). It reads local state (the
+// backend's store) without the network; the App calls it inside a
+// tea.Cmd.
+type ReadReceiptService interface {
+	// SeenBy lists the users whose read position is at or after the
+	// message ts in channelID, newest read first, leaving out the
+	// current user and the message's sender. threadTS is the thread
+	// the message is a reply in ("" for a channel message, the thread
+	// parent included): positions are the thread's then.
+	SeenBy(channelID, threadTS, ts string) ([]Reader, error)
+}
+
+// Reader is one user who has read a message (ReadReceiptService).
+type Reader struct {
+	UserID string
+	Name   string
+	// ReadTS is when they read it as a message TS ("seconds.micros"),
+	// and ReadTime that time formatted like a message's Timestamp;
+	// both "" when the backend does not know.
+	ReadTS, ReadTime string
+}
+
 // VerificationService answers interactive verification of this device
 // with another of the account's devices (on Matrix: comparing emoji). The
 // backend reports each verification's steps to the UI as ui.Verify*Msg

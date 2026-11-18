@@ -224,6 +224,10 @@ type Model struct {
 	// pick up the new coloring.
 	coloredUsernames bool
 
+	// hideSeen leaves out the read markers ([general] read_receipts
+	// off); see SetHideSeen.
+	hideSeen bool
+
 	// Compresses the vertical space as much as possible: remove avatars,
 	// put the username on the same line as the message, remove vertical
 	// separation between messages.
@@ -1324,6 +1328,49 @@ func (m *Model) SetColoredUsernames(enabled bool) {
 	m.dirty()
 }
 
+// SetHideSeen hides (or shows again) the read markers under messages
+// ([general] read_receipts). MoveSeen keeps the markers moving while
+// hidden, so showing them again needs no reload.
+func (m *Model) SetHideSeen(hide bool) {
+	if m.hideSeen == hide {
+		return
+	}
+	m.hideSeen = hide
+	m.dropCache()
+	m.dirty()
+}
+
+// MoveSeen moves userID's read marker under the message with TS ts
+// (MessageItem.SeenBy): off the message it was under, onto that one,
+// newest reader first. ts "", or a message the pane does not hold, only
+// takes the marker off. Only the messages that change are re-rendered
+// (staleEntries), and a pane at the bottom stays there (HoldBottom),
+// as for a reaction.
+func (m *Model) MoveSeen(userID, ts string) {
+	changed := false
+	for i := range m.messages {
+		msg := &m.messages[i]
+		seen, ok := MoveSeenBy(msg.SeenBy, userID, ts != "" && msg.TS == ts)
+		if !ok {
+			continue
+		}
+		if !changed {
+			m.list.HoldBottom()
+			changed = true
+		}
+		msg.SeenBy = seen
+		if m.cache != nil {
+			if m.staleEntries == nil {
+				m.staleEntries = make(map[string]struct{})
+			}
+			m.staleEntries[msg.TS] = struct{}{}
+		}
+	}
+	if changed {
+		m.dirty()
+	}
+}
+
 // SetCompact enables or disables the compact message view.
 func (m *Model) SetCompact(enabled bool) {
 	m.compact = enabled
@@ -1743,6 +1790,7 @@ func (m *Model) renderContext() *RenderContext {
 		SearchTerms:      m.searchTerms,
 		Nav:              m.nav,
 		ReplyAvatar:      m.replyAvatarFn,
+		HideSeen:         m.hideSeen,
 	}
 }
 

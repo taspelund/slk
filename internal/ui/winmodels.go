@@ -30,6 +30,7 @@ func (a *App) newWindowModel(chName string) *messages.Model {
 	m.SetSelfUserGroups(a.selfGroups)
 	m.SetEmojiContext(a.emojiCtx)
 	m.SetCompact(a.compact)
+	m.SetHideSeen(a.hideReadMarkers)
 	if a.emojiCustoms != nil {
 		// SetCustomEmoji ran after SetEmojiContext: its customs map
 		// supersedes the one captured inside emojiCtx.

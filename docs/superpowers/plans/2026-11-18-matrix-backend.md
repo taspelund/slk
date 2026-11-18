@@ -68,6 +68,7 @@ and `slk --matrix <account>`. Each account keeps `session.json` (0600) and
 | Profile | `internal/matrix/svc/profile.go`, `presence.go` | Read |
 | UI | small flagged `internal/ui` changes | M2 |
 | Verify | SAS verification modal, key-backup upload | M2 |
+| Receipts | others' read receipts: read markers and `:seen` (`svc/receipts*.go`, `internal/ui/read_receipts.go`) | Live |
 | Mixed | Slack and Matrix workspaces in one process | refactor Phase 2 |
 
 Contracts for Rooms, svc and Media are written when Wave A lands.

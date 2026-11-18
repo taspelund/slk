@@ -18,6 +18,10 @@ hide_deactivated_users = true   # hide deactivated people, as the Slack desktop
                                 # Set false to show them again. See below.
 workspace_picker_vim_keys = false  # true: :ws opens navigating: j/k move,
                                    # / starts filtering (esc clears it)
+read_receipts = true            # Matrix: "Seen by Alice, Bob" under the newest
+                                # message each person has read. false hides
+                                # the markers; :seen still lists who read a
+                                # message. Slack has no read receipts.
 
 [appearance]
 theme = "dracula"

@@ -1262,15 +1262,16 @@ func TestNormalModeKeys(t *testing.T) {
 				if !a.help.IsVisible() {
 					t.Error("help overlay not visible")
 				}
-				// mode_normal.go:211 seeds the overlay from
-				// help.FromKeyMap(a.keys) with no query set, and
+				// openHelpOverlay seeds the overlay from
+				// help.FromKeyMap(a.helpKeyMap()) (the backend's key
+				// map: Slack's leaves :seen out) with no query set, and
 				// help.VisibleEntries returns the unfiltered list when
 				// the query is empty (help/model.go:186-195). So the
 				// overlay carries the WHOLE keymap, in FromKeyMap's
 				// desc-sorted order -- element-for-element, not "at
-				// least a few". Rebuilding the want from a.keys keeps
-				// this stable as bindings are added.
-				want := help.FromKeyMap(a.keys)
+				// least a few". Rebuilding the want from the key map
+				// keeps this stable as bindings are added.
+				want := help.FromKeyMap(a.helpKeyMap())
 				got := a.help.VisibleEntries()
 				if len(got) != len(want) {
 					t.Fatalf("help entries = %d, want %d (the full keymap)", len(got), len(want))

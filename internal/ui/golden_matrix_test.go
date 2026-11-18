@@ -1,10 +1,14 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/gammons/slk/internal/core"
 
 	"github.com/gammons/slk/internal/ui/sidebar"
 )
@@ -38,6 +42,16 @@ func matrixGoldenApp(t *testing.T) *App {
 	return a
 }
 
+// goldenReaderNames are display names for the golden fixture's users
+// and for readers U5..U16, for the read-marker goldens.
+func goldenReaderNames() map[string]string {
+	names := map[string]string{"U1": "alice", "U2": "bob", "U3": "carol", "U4": "dave"}
+	for i := 5; i <= 16; i++ {
+		names[fmt.Sprintf("U%d", i)] = fmt.Sprintf("reader-%d", i)
+	}
+	return names
+}
+
 func TestGolden_Matrix(t *testing.T) {
 	cases := []struct {
 		name string
@@ -60,6 +74,25 @@ func TestGolden_Matrix(t *testing.T) {
 			a.compose.SetValue("/giphy cats")
 			a.Update(keyCode(tea.KeyEnter))
 		}, []string{"/giphy: Matrix has no server slash commands", "/giphy cats"}},
+		{"matrix_read_markers", func(a *App) {
+			a.SetUserNames(goldenReaderNames())
+			msgs := goldenMessages()
+			msgs[0].SeenBy = []string{"U4"}
+			msgs[1].SeenBy = []string{"U1", "U3"}
+			last := len(msgs) - 1
+			msgs[last].SeenBy = []string{"U2", "U3", "U4"}
+			for i := 5; i <= 16; i++ {
+				msgs[last].SeenBy = append(msgs[last].SeenBy, fmt.Sprintf("U%d", i))
+			}
+			a.messagepane.SetMessages(msgs)
+		}, []string{"Seen by dave", "Seen by alice, carol", "Seen by bob, carol, dave, reader-5, reader-6", "+"}},
+		{"matrix_seen_dialog", func(a *App) {
+			a.Update(seenLoadedMsg{readers: []core.Reader{
+				{UserID: "U2", Name: "bob", ReadTS: goldenTS(5 * time.Minute), ReadTime: "9:05 AM"},
+				{UserID: "U3", Name: "carol", ReadTS: goldenTS(-23 * time.Hour), ReadTime: "10:00 AM"},
+				{UserID: "U4", Name: "dave"},
+			}})
+		}, []string{"Read receipts", "Seen by  (3)", "bob · ", "9:05 AM", "carol · ", "10:00 AM", "dave"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

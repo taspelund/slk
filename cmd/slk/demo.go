@@ -97,6 +97,7 @@ func newDemoApp(d *demo.Demo) *ui.App {
 		TimestampFormat:      demo.TimestampFormat,
 		TypingIndicators:     true,
 		HideDeactivatedUsers: true,
+		ReadReceipts:         true,
 		MouseWheelLines:      3,
 		ColoredUsernames:     true,
 		ClickOpensThread:     true,

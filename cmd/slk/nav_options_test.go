@@ -39,3 +39,30 @@ func TestUISettingsFromConfig_NavigationOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestUISettingsFromConfig_ReadReceipts: [general] read_receipts is on
+// unless the config turns it off.
+func TestUISettingsFromConfig_ReadReceipts(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"unset", "", true},
+		{"off", "[general]\nread_receipts = false\n", false},
+		{"on", "[general]\nread_receipts = true\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := uiSettingsFromConfig(cfg).ReadReceipts; got != tc.want {
+				t.Errorf("ReadReceipts = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

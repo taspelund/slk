@@ -95,6 +95,10 @@ type General struct {
 	// j/k move the highlight and / starts the name filter, as in the
 	// help overlay. Default off: typing filters straight away.
 	WorkspacePickerVimKeys bool `toml:"workspace_picker_vim_keys"`
+	// ReadReceipts draws other users' read markers ("Seen by Alice,
+	// Bob") under messages, on a backend that has read receipts
+	// (Matrix). Default on; false hides the markers, :seen still works.
+	ReadReceipts bool `toml:"read_receipts"`
 }
 
 type Appearance struct {
@@ -304,6 +308,7 @@ func Default() Config {
 		General: General{
 			DownloadDir:          "~/Downloads",
 			HideDeactivatedUsers: true,
+			ReadReceipts:         true,
 		},
 		Appearance: Appearance{
 			Theme:            "nord",

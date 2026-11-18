@@ -53,6 +53,8 @@ type Model struct {
 	// selfGroups are the usergroup IDs the current user belongs to; a
 	// mention of one highlights the message like a direct mention.
 	selfGroups map[string]bool
+	// hideSeen leaves out the read markers; see SetHideSeen.
+	hideSeen bool
 
 	// Reply cache: the payload and the list entry of every reply,
 	// index-aligned with m.replies, rebuilt when the replies or the width
@@ -261,6 +263,9 @@ func (m *Model) SetThread(parent messages.MessageItem, replies []messages.Messag
 		m.unreadBoundaryTS = ""
 	}
 	m.ClearSelection()
+	// The parent's markers are the channel's (it is a channel message);
+	// this pane draws the thread's, which sit under replies only.
+	parent.SeenBy = nil
 	m.parent = parent
 	m.replies = replies
 	m.channelID = channelID
@@ -628,6 +633,39 @@ func (m *Model) SetColoredUsernames(enabled bool) {
 func (m *Model) SetCompact(enabled bool) {
 	m.compact = enabled
 	m.InvalidateCache()
+}
+
+// SetHideSeen hides (or shows again) the read markers under replies;
+// see messages.(*Model).SetHideSeen.
+func (m *Model) SetHideSeen(hide bool) {
+	if m.hideSeen == hide {
+		return
+	}
+	m.hideSeen = hide
+	m.InvalidateCache()
+}
+
+// MoveSeen moves userID's read marker in this thread under the reply
+// with TS ts, as messages.(*Model).MoveSeen does in the channel; the
+// parent never carries the thread's markers. A pane at the bottom stays
+// there (HoldBottom).
+func (m *Model) MoveSeen(userID, ts string) {
+	changed := false
+	for i := range m.replies {
+		r := &m.replies[i]
+		seen, ok := messages.MoveSeenBy(r.SeenBy, userID, ts != "" && r.TS == ts)
+		if !ok {
+			continue
+		}
+		if !changed {
+			m.list.HoldBottom()
+			changed = true
+		}
+		r.SeenBy = seen
+	}
+	if changed {
+		m.InvalidateCache()
+	}
 }
 
 // SetShowAvatars draws the avatar from SetAvatarFunc beside each message
@@ -1527,6 +1565,7 @@ func (m *Model) renderContext() *messages.RenderContext {
 		Images:           m.imgRenderer,
 		ImageChannel:     m.channelID,
 		Nav:              m.nav,
+		HideSeen:         m.hideSeen,
 	}
 }
 

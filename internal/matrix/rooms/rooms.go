@@ -527,9 +527,12 @@ type Changes struct {
 	Joined, Left []id.RoomID
 	// ReadStates lists rooms whose read state changed. OwnReceipts lists
 	// the account's own receipts that moved (from another device or this
-	// one).
+	// one); Receipts lists other users' receipts that moved forward (a
+	// receipt that would move one back is dropped, see
+	// store.AdvanceReceipt), in the order applied.
 	ReadStates  []id.RoomID
 	OwnReceipts []Receipt
+	Receipts    []UserReceipt
 	// Typing maps a room to the users typing there now (complete list).
 	Typing map[id.RoomID][]id.UserID
 	// Names lists users whose display name changed.
@@ -574,6 +577,20 @@ type Receipt struct {
 	Thread id.EventID // "" for the main timeline
 	Event  id.EventID
 	TS     string
+}
+
+// UserReceipt is another user's read receipt that moved.
+type UserReceipt struct {
+	Room id.RoomID
+	User id.UserID
+	// Thread is the receipt's thread_id: "" for an unthreaded receipt
+	// (it reads the main timeline and every thread up to Event), "main"
+	// for the main timeline only, else the root of the one thread it
+	// reads.
+	Thread string
+	Event  id.EventID
+	// TS is Event's TS, "" when the event was not mapped yet.
+	TS string
 }
 
 // Room is one room as the backend needs it.

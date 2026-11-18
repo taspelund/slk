@@ -44,6 +44,8 @@ type uiSettings struct {
 	// WorkspacePickerVimKeys is [general] workspace_picker_vim_keys
 	// (default off).
 	WorkspacePickerVimKeys bool
+	// ReadReceipts is [general] read_receipts (default on).
+	ReadReceipts bool
 	// EnterKeepsFocus is [sidebar] enter_keeps_focus (default off).
 	EnterKeepsFocus bool
 	// ClickOpensThread is [appearance] click_opens_thread (default on).
@@ -82,6 +84,7 @@ func uiSettingsFromConfig(cfg config.Config) uiSettings {
 		ReplyAvatars:           cfg.Appearance.ReplyAvatars,
 		HideDeactivatedUsers:   cfg.General.HideDeactivatedUsers,
 		WorkspacePickerVimKeys: cfg.General.WorkspacePickerVimKeys,
+		ReadReceipts:           cfg.General.ReadReceipts,
 		EnterKeepsFocus:        cfg.Sidebar.EnterKeepsFocus,
 		ClickOpensThread:       cfg.Appearance.ClickOpensThread,
 	}
@@ -116,6 +119,7 @@ func applyUISettings(app *ui.App, s uiSettings) {
 	app.SetStayInInsertAfterSend(s.StayInInsertAfterSend)
 	app.SetReplyAvatars(s.ReplyAvatars)
 	app.SetWorkspacePickerVimKeys(s.WorkspacePickerVimKeys)
+	app.SetReadMarkers(s.ReadReceipts)
 	app.SetEnterKeepsFocus(s.EnterKeepsFocus)
 	app.SetClickOpensThread(s.ClickOpensThread)
 }

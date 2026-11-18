@@ -73,10 +73,12 @@ func (a *App) refuseSlackOnly(what string) (cmd tea.Cmd, refused bool) {
 }
 
 // helpKeyMap is the key map the help overlay lists: a.keys without
-// what the backend lacks (see Backend).
+// what the backend lacks (see Backend), and on Slack without :seen
+// (Slack has no read receipts).
 func (a *App) helpKeyMap() KeyMap {
 	km := a.keys
 	if a.backend.slack() {
+		km.SeenBy.SetHelp("", "")
 		return km
 	}
 	for _, b := range []*key.Binding{

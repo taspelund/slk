@@ -109,7 +109,8 @@ func TestUnreadQueriesAndRelations(t *testing.T) {
 var v1FS embed.FS
 
 // TestMigrateFromV1 opens a database made with the v1 schema, holding a
-// room, and checks it is upgraded with the room's inputs unsaved.
+// room and a receipt, and checks it is upgraded with the room's inputs
+// unsaved and the receipt's time unknown.
 func TestMigrateFromV1(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "matrix.db")
@@ -132,6 +133,10 @@ func TestMigrateFromV1(t *testing.T) {
 		VALUES ('!r:x', 'Alice', 'dm', 'join', '@alice:x')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(ctx, `INSERT INTO slkmx_receipts (room_id, thread_id, user_id, event_id, ts)
+		VALUES ('!r:x', '', '@alice:x', ?1, '0000000001.000000')`, "$1"); err != nil {
+		t.Fatal(err)
+	}
 	db.Close()
 
 	s, err := Open(ctx, path)
@@ -139,8 +144,8 @@ func TestMigrateFromV1(t *testing.T) {
 		t.Fatalf("Open v1: %v", err)
 	}
 	defer s.Close()
-	if v := versionOf(t, s.DB, VersionTable); v != 3 || v != len(upgradeTable) {
-		t.Fatalf("version after upgrade = %d, want 3", v)
+	if v := versionOf(t, s.DB, VersionTable); v != 4 || v != len(upgradeTable) {
+		t.Fatalf("version after upgrade = %d, want 4", v)
 	}
 	r, ok, err := s.GetRoom(ctx, "!r:x")
 	if err != nil || !ok || r.Name != "Alice" || r.Kind != RoomDM || r.DMUserID != "@alice:x" ||
@@ -150,8 +155,16 @@ func TestMigrateFromV1(t *testing.T) {
 	}
 	// The upgraded schema is the latest revision's.
 	fresh, _ := openTest(t)
-	if got, want := columns(t, s.DB, "slkmx_rooms"), columns(t, fresh.DB, "slkmx_rooms"); !slices.Equal(got, want) {
-		t.Fatalf("upgraded columns %v\nlatest columns %v", got, want)
+	for _, table := range []string{"slkmx_rooms", "slkmx_receipts"} {
+		if got, want := columns(t, s.DB, table), columns(t, fresh.DB, table); !slices.Equal(got, want) {
+			t.Fatalf("upgraded %s columns %v\nlatest columns %v", table, got, want)
+		}
+	}
+	if rec, ok, err := s.GetReceipt(ctx, "!r:x", "", "@alice:x"); err != nil || !ok || rec.EventID != "$1" || rec.ReadAt != 0 {
+		t.Fatalf("migrated receipt = %+v %v %v", rec, ok, err)
+	}
+	if got, err := s.UserRoomReceipts(ctx, "!r:x", "@alice:x"); err != nil || len(got) != 1 {
+		t.Fatalf("UserRoomReceipts after upgrade = %+v %v", got, err)
 	}
 }
 
@@ -220,5 +233,54 @@ func TestGapUpdatesAndTSBefore(t *testing.T) {
 	}
 	if _, ok, err := s.TSBefore(ctx, "!r:x", "0000000001.000000"); err != nil || ok {
 		t.Fatalf("TSBefore the oldest: %v %v", ok, err)
+	}
+}
+
+// TestAdvanceReceiptOnlyMovesForward: a receipt replaces the stored one
+// when it is later, or the stored one has no TS yet; never one further
+// on, and one without a TS never replaces one with a TS.
+func TestAdvanceReceiptOnlyMovesForward(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := context.Background()
+	rec := func(ev id.EventID, ts string, at int64) Receipt {
+		return Receipt{RoomID: "!r:x", ThreadID: "", UserID: "@a:x", EventID: ev, TS: ts, ReadAt: at}
+	}
+	for _, step := range []struct {
+		what  string
+		r     Receipt
+		moved bool
+		want  Receipt
+	}{
+		{"first, no TS yet", rec("$1", "", 10), true, rec("$1", "", 10)},
+		{"another without a TS", rec("$2", "", 20), true, rec("$2", "", 20)},
+		{"one with a TS", rec("$3", "0000000003.000000", 30), true, rec("$3", "0000000003.000000", 30)},
+		{"the same event", rec("$3", "0000000003.000000", 40), false, rec("$3", "0000000003.000000", 30)},
+		{"an older one", rec("$1", "0000000001.000000", 50), false, rec("$3", "0000000003.000000", 30)},
+		{"one without a TS", rec("$4", "", 60), false, rec("$3", "0000000003.000000", 30)},
+		{"a later one", rec("$5", "0000000005.000000", 70), true, rec("$5", "0000000005.000000", 70)},
+	} {
+		moved, err := s.AdvanceReceipt(ctx, step.r)
+		if err != nil || moved != step.moved {
+			t.Fatalf("%s: moved = %v, %v; want %v", step.what, moved, err, step.moved)
+		}
+		if got, _, _ := s.GetReceipt(ctx, "!r:x", "", "@a:x"); got != step.want {
+			t.Fatalf("%s: stored %+v, want %+v", step.what, got, step.want)
+		}
+	}
+	// Per thread and user: another thread or user is its own receipt.
+	other := rec("$1", "0000000001.000000", 0)
+	other.ThreadID = "main"
+	if moved, err := s.AdvanceReceipt(ctx, other); err != nil || !moved {
+		t.Fatalf("another thread: %v %v", moved, err)
+	}
+	other.UserID = "@b:x"
+	if moved, err := s.AdvanceReceipt(ctx, other); err != nil || !moved {
+		t.Fatalf("another user: %v %v", moved, err)
+	}
+	if got, err := s.RoomReceipts(ctx, "!r:x"); err != nil || len(got) != 3 {
+		t.Fatalf("RoomReceipts = %+v %v", got, err)
+	}
+	if got, err := s.UserRoomReceipts(ctx, "!r:x", "@a:x"); err != nil || len(got) != 2 || got[0].ThreadID != "" || got[1].ThreadID != "main" {
+		t.Fatalf("UserRoomReceipts = %+v %v", got, err)
 	}
 }

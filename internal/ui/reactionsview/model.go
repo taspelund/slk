@@ -2,6 +2,8 @@
 // reactions on a message, grouped by emoji, with the display names of the
 // users who reacted with it. Data is supplied by the App (assembled from the
 // cached per-user reaction data); the modal does not fetch anything itself.
+// OpenTitled shows another list of people the same way (who has read a
+// message, :seen).
 package reactionsview
 
 import (
@@ -32,10 +34,14 @@ type ReactionGroup struct {
 	Emoji string
 	Users []string
 	Count int
+	// Label, when set, heads the group instead of Emoji's glyph, for a
+	// list of people that is not reactions (OpenTitled).
+	Label string
 }
 
 // Model is the reactions-list overlay state.
 type Model struct {
+	title   string
 	groups  []ReactionGroup
 	visible bool
 	offset  int // scroll offset in rendered content lines
@@ -49,6 +55,14 @@ func New() *Model { return &Model{} }
 
 // Open shows the modal for the given reaction groups and resets scroll.
 func (m *Model) Open(groups []ReactionGroup) {
+	m.OpenTitled("Reactions", groups)
+}
+
+// OpenTitled shows the modal under another title: the same read-only
+// list of people in groups, for something other than reactions (who
+// has read a message, :seen).
+func (m *Model) OpenTitled(title string, groups []ReactionGroup) {
+	m.title = title
 	m.groups = groups
 	m.offset = 0
 	m.maxOff = 0
@@ -110,7 +124,11 @@ func (m *Model) contentLines(bg color.Color, innerWidth int) []string {
 
 	var lines []string
 	for _, g := range m.groups {
-		header := emojiGlyph(g.Emoji) + "  (" + countLabel(len(g.Users), g.Count) + ")"
+		head := g.Label
+		if head == "" {
+			head = emojiGlyph(g.Emoji)
+		}
+		header := head + "  (" + countLabel(len(g.Users), g.Count) + ")"
 		lines = append(lines, headerStyle.Width(innerWidth).Render(fit(header, innerWidth)))
 		for _, u := range g.Users {
 			lines = append(lines, userStyle.Width(innerWidth).Render(fit("  "+u, innerWidth)))
@@ -205,7 +223,7 @@ func (m *Model) renderBox(termWidth, termHeight int) string {
 	window := all[m.offset:end]
 
 	return chrome.Frame{
-		Title:  "Reactions",
+		Title:  m.title,
 		Body:   window,
 		Footer: s.Footer.Render("\u2191/\u2193 scroll   esc close"),
 	}.Render(s, overlayWidth)

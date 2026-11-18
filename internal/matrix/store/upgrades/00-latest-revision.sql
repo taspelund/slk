@@ -1,4 +1,4 @@
--- v0 -> v3: Latest revision
+-- v0 -> v4: Latest revision
 -- The /sync position. One row (id 0), created here so reads never miss.
 CREATE TABLE slkmx_sync_state (
 	id         INTEGER PRIMARY KEY CHECK (id = 0),
@@ -96,15 +96,18 @@ CREATE TABLE slkmx_aliases (
 
 -- Read receipts. thread_id is '' for an unthreaded receipt, 'main' or a
 -- thread root event ID for a threaded one; ts is the slk TS of event_id
--- ('' when it has none yet).
+-- ('' when it has none yet); read_at is the receipt's own ts, when the
+-- user read it, in unix milliseconds (0 when unknown).
 CREATE TABLE slkmx_receipts (
-	room_id   TEXT NOT NULL,
-	thread_id TEXT NOT NULL,
-	user_id   TEXT NOT NULL,
-	event_id  TEXT NOT NULL,
-	ts        TEXT NOT NULL DEFAULT '',
+	room_id   TEXT    NOT NULL,
+	thread_id TEXT    NOT NULL,
+	user_id   TEXT    NOT NULL,
+	event_id  TEXT    NOT NULL,
+	ts        TEXT    NOT NULL DEFAULT '',
+	read_at   INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (room_id, thread_id, user_id)
 ) WITHOUT ROWID;
+CREATE INDEX slkmx_receipts_room_user ON slkmx_receipts (room_id, user_id);
 
 -- Holes in a room's stored timeline (a limited /sync): paginate back from
 -- prev_batch to fill the events before after_ts.

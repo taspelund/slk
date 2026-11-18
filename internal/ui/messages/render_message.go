@@ -55,6 +55,9 @@ type RenderContext struct {
 	SearchTerms      []string
 	Nav              ReactionNav // drawn only when RenderOptions.IsSelected
 	ReplyAvatar      AvatarFunc  // Slack-style reply row when non-nil
+	// HideSeen leaves out the read-marker row ("Seen by …", from
+	// MessageItem.SeenBy): [general] read_receipts off.
+	HideSeen bool
 }
 
 // RenderOptions are the per-pane differences in how a message renders:
@@ -723,7 +726,15 @@ func RenderMessage(msg MessageItem, width int, rc *RenderContext, opt RenderOpti
 		attachmentLineCount = len(flat)
 	}
 
-	msgContent := labelRows + header + bodyRow + bkBlock + attachmentLines + threadLine + reactionLine
+	// The read markers go last, so no hit rect above them moves.
+	var seenLine string
+	if !rc.HideSeen {
+		if t := SeenByText(msg.SeenBy, rc.UserNames, contentWidth); t != "" {
+			seenLine = "\n" + styles.Timestamp.Render(t)
+		}
+	}
+
+	msgContent := labelRows + header + bodyRow + bkBlock + attachmentLines + threadLine + reactionLine + seenLine
 
 	// Translate per-pill specs into entry-relative reaction hit rects.
 	// reactionRowBase is the row index (within linesNormal) where the
