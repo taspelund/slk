@@ -120,7 +120,7 @@ func main() {
 				os.Exit(1)
 			}
 			os.Exit(0)
-		case "--matrix-login", "--matrix":
+		case "--matrix-login", "--matrix-verify", "--matrix":
 			// Hidden while the Matrix backend is being built
 			// (internal/matrix). Both run before the config pre-load.
 			if len(os.Args) < 3 {
@@ -129,8 +129,11 @@ func main() {
 			}
 			readOnly := len(os.Args) > 3 && os.Args[3] == "--read-only"
 			run := func(account string) error { return runMatrix(account, readOnly) }
-			if os.Args[1] == "--matrix-login" {
+			switch os.Args[1] {
+			case "--matrix-login":
 				run = runMatrixLogin
+			case "--matrix-verify":
+				run = runMatrixVerify
 			}
 			if err := run(os.Args[2]); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)

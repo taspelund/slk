@@ -36,6 +36,8 @@ import (
 // built (see internal/matrix):
 //
 //	slk --matrix-login <account>   log in and save the device
+//	slk --matrix-verify <account>  verify the saved device with the
+//	                               recovery key again
 //	slk --matrix <account>         run the TUI against that account
 //	  --read-only                  ... without changing the account: no
 //	                               sends, receipts, presence or uploads
@@ -94,6 +96,27 @@ func runMatrixLogin(account string) error {
 	}
 	fmt.Printf("Logged in as %s on %s.\nDevice ID: %s (%q)\n", creds.UserID, creds.Homeserver, creds.DeviceID, deviceName)
 
+	return verifyMatrixDevice(ctx, in, dir, creds)
+}
+
+// runMatrixVerify verifies an account's existing device with its recovery
+// key again: it restores room keys from the key backup and saves the
+// backup key, which lets the device upload its own room keys to the
+// backup. A device verified before slk saved that key needs this once.
+func runMatrixVerify(account string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	dir := matrixAccountDir(account)
+	creds, err := session.LoadCredentials(dir)
+	if err != nil {
+		return fmt.Errorf("account %q: %w (log in with slk --matrix-login %s)", account, err, account)
+	}
+	return verifyMatrixDevice(ctx, bufio.NewReader(os.Stdin), dir, creds)
+}
+
+// verifyMatrixDevice asks for the recovery key and verifies the device
+// with it. Enter skips.
+func verifyMatrixDevice(ctx context.Context, in *bufio.Reader, dir string, creds session.Credentials) error {
 	key, err := promptSecret(in, "Recovery key, to verify this device and restore message history (Enter to skip): ")
 	if err != nil {
 		return err
