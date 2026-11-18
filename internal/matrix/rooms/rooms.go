@@ -31,6 +31,32 @@
 //   - MentionCount: the room's highlight_count from /sync
 //   - per-thread unread state is computed from threaded receipts, because
 //     the homeserver does not send per-thread counts (MSC3773 is off)
+//
+// Details of the above: the receipt is the later of the unthreaded and
+// "main" receipts (m.read or m.read.private; receipts never move back);
+// the newest stored main-timeline event the account sent counts as read;
+// thread replies and still-encrypted thread replies do not make the room
+// unread; m.marked_unread makes it unread; and when the receipt is on an
+// event the store does not hold (older than the stored window), the
+// room's notification_count decides until that event is backfilled.
+//
+// What is stored (slkmx_events), for readers:
+//
+//   - m.room.message, m.sticker, m.reaction and still-encrypted
+//     m.room.encrypted events, each with its TS; content_json is the
+//     event's own content (decrypted when decrypted = 1). Other events
+//     (state, redactions) are applied, not stored.
+//   - An edit is its own row (rel_type m.replace, relates_to_event the
+//     original, body ""). The original keeps its content_json and its body
+//     becomes the text of its latest valid edit (an unredacted m.replace
+//     from the same sender); store.Relations lists the edits, so a reader
+//     takes m.new_content from the newest valid one.
+//   - A reaction is a row with rel_type m.annotation; its key is in
+//     content_json.
+//   - A thread reply has thread_root (and relates_to_event) set to the
+//     root; edits and reactions never have thread_root set.
+//   - A redacted event keeps its row with redacted = 1, content_json {}
+//     and body "".
 package rooms
 
 import (
@@ -332,8 +358,10 @@ type Changes struct {
 	// were applied.
 	Timeline []TimelineChange
 	// Rooms lists rooms whose sidebar row (name, kind, section, topic,
-	// membership) changed; Joined and Left are rooms the account joined
-	// or left in this batch.
+	// membership) changed, spaces included; Joined and Left are rooms the
+	// account joined or left in this batch. A room seen for the first time
+	// (every room of the first sync) is in Rooms, and in Joined when
+	// joined.
 	Rooms        []id.RoomID
 	Joined, Left []id.RoomID
 	// ReadStates lists rooms whose read state changed. OwnReceipts lists
@@ -395,7 +423,9 @@ type Room struct {
 	Kind      store.RoomKind
 	Encrypted bool
 	DMUser    id.UserID
-	Section   string
+	// Section is the sidebar section ID (see Snapshot), "" for a room
+	// that is not a sidebar row (a space, an invite, a room left).
+	Section string
 }
 
 // Snapshot is the sidebar's view of the account. Every call returns fresh
