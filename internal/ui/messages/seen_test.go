@@ -105,3 +105,22 @@ func TestMoveSeenRerendersOnlyTheMessagesItTouches(t *testing.T) {
 		t.Fatalf("shown again: %q", got)
 	}
 }
+
+// TestRemovedMessageHandsItsMarkersBack: removing (deleting, redacting) a
+// message that carries markers moves them under the message before it,
+// ahead of that message's own, except its author's.
+func TestRemovedMessageHandsItsMarkersBack(t *testing.T) {
+	msgs := []MessageItem{
+		{TS: "1.0", UserID: "U4", UserName: "dave", Text: "one", Timestamp: "1:00 PM", SeenBy: []string{"U3"}},
+		{TS: "2.0", UserID: "U1", UserName: "alice", Text: "two", Timestamp: "1:01 PM", SeenBy: []string{"U2", "U4"}},
+	}
+	m := New(msgs, "general")
+	m.SetUserNames(map[string]string{"U2": "Bob", "U3": "Carol", "U4": "Dave"})
+	_ = m.View(30, 60)
+	if !m.RemoveMessageByTS("2.0") {
+		t.Fatal("not removed")
+	}
+	if got := seenRows(m.View(30, 60)); len(got) != 1 || !strings.HasSuffix(got[0], "Seen by Bob, Carol") {
+		t.Fatalf("after removal: %q", got)
+	}
+}

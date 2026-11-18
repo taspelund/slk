@@ -65,6 +65,10 @@ type Model struct {
 	replyEntries  []entrylist.Entry
 	cacheWidth    int
 	cacheReplyLen int
+	// staleReplies are replies (by TS) whose cached entry is out of
+	// date while the rest of the cache is good: the next View rebuilds
+	// only them (a moved read marker; see MoveSeen).
+	staleReplies map[string]struct{}
 
 	// list is the shared substrate: entries (the parent, the replies and
 	// the decoration rows between them), scroll, the visible window, text
@@ -173,6 +177,7 @@ func newThreadList() *entrylist.Model {
 func (m *Model) dropCache() {
 	m.cache = nil
 	m.replyEntries = nil
+	clear(m.staleReplies)
 	m.list.KeepLookups(1)
 }
 
@@ -228,6 +233,29 @@ func (m *Model) Version() int64 { return m.version + m.list.Version() }
 func (m *Model) ChromeHeight() int { return m.chromeHeight }
 
 func (m *Model) dirty() { m.version++ }
+
+// replyEntry renders reply i for the reply cache: its list entry and
+// payload.
+func (m *Model) replyEntry(i, width int, wrap messages.WrapStyles) (entrylist.Entry, messages.EntryPayload) {
+	reply := m.replies[i]
+	// renderMessage's last arg ("isSelected") drives reaction-nav pill
+	// highlighting, so it MUST be i == m.selected.
+	r := m.renderMessage(reply, width, i == m.selected)
+	// The thread pane's kitty upload order: body, blocks, reactions,
+	// then attachments.
+	flushes := slices.Concat(r.BodyFlushes, r.BlockFlushes, r.ReactionFlushes, r.AttachmentFlushes)
+	w := messages.WrapRows(reply, r, width, wrap)
+	return entrylist.Entry{
+		ID:         reply.TS,
+		Ref:        i,
+		Selectable: true,
+		Lines:      w.Lines,
+		Selected:   w.Selected,
+		Plain:      w.Plain,
+		ColOffset:  1,
+		Hits:       append(r.Hits, w.LinkHits...),
+	}, messages.EntryPayload{ShortSrc: w.ShortSrc, Flushes: flushes}
+}
 
 // InvalidateCache forces the render cache to be rebuilt on next View().
 // Call this after theme changes or style updates.
@@ -544,6 +572,11 @@ func (m *Model) SetHuddleRoom(ts string, room *messages.HuddleRoom) bool {
 func (m *Model) RemoveMessageByTS(ts string) bool {
 	for i, r := range m.replies {
 		if r.TS == ts {
+			// Its read markers move under the reply before it; the
+			// parent never carries the thread's markers.
+			if i > 0 && len(r.SeenBy) > 0 {
+				m.replies[i-1].SeenBy = messages.InheritSeenBy(m.replies[i-1], r.SeenBy)
+			}
 			m.replies = append(m.replies[:i], m.replies[i+1:]...)
 			if i <= m.selected && m.selected > 0 {
 				m.selected--
@@ -647,7 +680,8 @@ func (m *Model) SetHideSeen(hide bool) {
 
 // MoveSeen moves userID's read marker in this thread under the reply
 // with TS ts, as messages.(*Model).MoveSeen does in the channel; the
-// parent never carries the thread's markers. A pane at the bottom stays
+// parent never carries the thread's markers. Only the replies that
+// change are re-rendered (staleReplies), and a pane at the bottom stays
 // there (HoldBottom).
 func (m *Model) MoveSeen(userID, ts string) {
 	changed := false
@@ -662,9 +696,15 @@ func (m *Model) MoveSeen(userID, ts string) {
 			changed = true
 		}
 		r.SeenBy = seen
+		if m.cache != nil {
+			if m.staleReplies == nil {
+				m.staleReplies = make(map[string]struct{})
+			}
+			m.staleReplies[r.TS] = struct{}{}
+		}
 	}
 	if changed {
-		m.InvalidateCache()
+		m.dirty()
 	}
 }
 
@@ -1363,24 +1403,9 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 		// for every visible reply on every j/k.
 		wrap := messages.NewWrapStyles(m.focused, m.compact)
 		for i, reply := range m.replies {
-			// renderMessage's last arg ("isSelected") drives reaction-
-			// nav pill highlighting, so it MUST be i == m.selected.
-			r := m.renderMessage(reply, width, i == m.selected)
-			// The thread pane's kitty upload order: body, blocks,
-			// reactions, then attachments.
-			flushes := slices.Concat(r.BodyFlushes, r.BlockFlushes, r.ReactionFlushes, r.AttachmentFlushes)
-			w := messages.WrapRows(reply, r, width, wrap)
-			m.replyEntries = append(m.replyEntries, entrylist.Entry{
-				ID:         reply.TS,
-				Ref:        i,
-				Selectable: true,
-				Lines:      w.Lines,
-				Selected:   w.Selected,
-				Plain:      w.Plain,
-				ColOffset:  1,
-				Hits:       append(r.Hits, w.LinkHits...),
-			})
-			m.cache = append(m.cache, messages.EntryPayload{ShortSrc: w.ShortSrc, Flushes: flushes})
+			e, p := m.replyEntry(i, width, wrap)
+			m.replyEntries = append(m.replyEntries, e)
+			m.cache = append(m.cache, p)
 			m.replyIDToIdx[reply.TS] = i
 		}
 		m.cacheWidth = width
@@ -1390,7 +1415,17 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 			debuglog.Perf("thread.buildCache N=%d width=%d took=%s reason=%s",
 				len(m.replies), width, time.Since(perfStart), perfReason)
 		}
+	} else if len(m.staleReplies) > 0 {
+		// Only some replies changed (MoveSeen): rebuild their entries.
+		wrap := messages.NewWrapStyles(m.focused, m.compact)
+		for ts := range m.staleReplies {
+			if i, ok := m.replyIDToIdx[ts]; ok {
+				m.replyEntries[i], m.cache[i] = m.replyEntry(i, width, wrap)
+			}
+		}
+		m.flushKey.selected = math.MinInt // re-emit the kitty uploads
 	}
+	clear(m.staleReplies)
 
 	// The list: the parent, then for each reply its day divider (when
 	// its local day differs from the previous one, seeded with the

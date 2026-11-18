@@ -67,3 +67,26 @@ func MoveSeenBy(seen []string, user string, here bool) (out []string, changed bo
 	}
 	return slices.Delete(slices.Clone(seen), i, i+1), true
 }
+
+// InheritSeenBy returns prev's SeenBy once the message right after it,
+// whose markers were seen, is removed (deleted, redacted): those readers
+// read past prev, so their markers move under it, ahead of its own,
+// except its author's (no marker sits under a reader's own message).
+// prev's SeenBy itself is never modified.
+func InheritSeenBy(prev MessageItem, seen []string) []string {
+	if len(seen) == 0 {
+		return prev.SeenBy
+	}
+	out := make([]string, 0, len(seen)+len(prev.SeenBy))
+	for _, u := range seen {
+		if u != prev.UserID && !slices.Contains(out, u) {
+			out = append(out, u)
+		}
+	}
+	for _, u := range prev.SeenBy {
+		if !slices.Contains(out, u) {
+			out = append(out, u)
+		}
+	}
+	return out
+}

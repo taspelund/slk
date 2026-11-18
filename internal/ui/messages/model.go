@@ -1223,11 +1223,15 @@ func (m *Model) SetHuddleRoom(ts string, room *HuddleRoom) bool {
 }
 
 // RemoveMessageByTS removes a message with the given TS, adjusting the
-// selected index so it remains valid. Returns true if the message was
+// selected index so it remains valid. Its read markers move under the
+// message before it (InheritSeenBy). Returns true if the message was
 // found and removed. Invalidates the render cache.
 func (m *Model) RemoveMessageByTS(ts string) bool {
 	for i, msg := range m.messages {
 		if msg.TS == ts {
+			if i > 0 && len(msg.SeenBy) > 0 {
+				m.messages[i-1].SeenBy = InheritSeenBy(m.messages[i-1], msg.SeenBy)
+			}
 			m.messages = append(m.messages[:i], m.messages[i+1:]...)
 			if i <= m.selected && m.selected > 0 {
 				m.selected--

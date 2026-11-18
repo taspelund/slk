@@ -110,5 +110,13 @@ func (a *App) openSeenBy(m seenLoadedMsg) tea.Cmd {
 		{Label: "Seen by", Users: rows, Count: len(rows)},
 	})
 	a.SetMode(ModeReactionsView)
+	// The reactions list's mode, under the dialog's own name.
+	a.statusbar.SetMode(modeLabel("SEEN"))
 	return nil
 }
+
+// modeLabel is a status-bar mode label for a mode shown under another
+// name.
+type modeLabel string
+
+func (l modeLabel) String() string { return string(l) }

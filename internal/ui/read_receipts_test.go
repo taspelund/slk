@@ -135,6 +135,9 @@ func TestSeenCommand(t *testing.T) {
 		if a.mode != ModeReactionsView {
 			t.Fatalf("mode = %v", a.mode)
 		}
+		if got := statusbarText(a); !strings.Contains(got, "SEEN") || strings.Contains(got, "REACTIONS") {
+			t.Errorf("status bar = %q, want the SEEN mode label", got)
+		}
 		box := stripANSI(a.reactionsView.ViewOverlay(100, 30, ""))
 		for _, w := range []string{"Read receipts", "Seen by  (2)", "Bob · ", "9:00 AM", "Carol"} {
 			if !strings.Contains(box, w) {
