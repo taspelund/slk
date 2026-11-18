@@ -5,7 +5,16 @@
 // It reads the account database (store) and the room model (rooms), and
 // makes requests through the session's client. It never writes the room or
 // timeline tables itself: events it fetches go through rooms.Model.Backfill
-// and events it sends come back through /sync.
+// or FillGap, synced ones through Apply and ApplyDecrypted (Run), and
+// events it sends come back through /sync.
+//
+// Wiring, in cmd/slk: New, then Install on the App, SetNotifications
+// (how new messages notify; before Run), then Run on the session's events
+// in a goroutine and StartupMsgs. Run holds after the first sync (or the
+// first failed one) until StartupMsgs has built the workspace from the
+// model, and the batch that snapshot holds sends nothing, so sending
+// StartupMsgs' messages before letting Run's sends through delivers the
+// workspace first and loses nothing (live.go shows the gate).
 //
 // The port implementations are split by work package, each filling its part
 // of a ports value:
@@ -14,7 +23,7 @@
 //	write.go    fillWrite    send, edit, delete, reactions, receipts, joins (WP-Write)
 //	files.go    fillFiles    uploads, downloads, images (WP-Media)
 //	profile.go  fillProfile  profiles, presence (WP-Profile)
-//	live.go     StartupMsgs, Run: sync batches -> ui messages (WP-Live)
+//	live.go     StartupMsgs, Run, SetNotifications: sync batches -> ui messages (WP-Live)
 package svc
 
 import (

@@ -2,7 +2,6 @@ package svc
 
 import (
 	"context"
-	"errors"
 	"maps"
 	"slices"
 	"sync"
@@ -106,9 +105,7 @@ type Notifications struct {
 	ActiveChannelID func() string
 }
 
-// liveState is the live side's state of one Backend. It lives beside the
-// Backend rather than in it because backend.go is another work package's
-// file (see lives).
+// liveState is the live side's state of one Backend (Backend.live).
 type liveState struct {
 	mu    sync.Mutex
 	notif Notifications
@@ -123,22 +120,13 @@ type liveState struct {
 	sections *sectionsProvider
 }
 
-// lives holds each Backend's liveState.
-var lives sync.Map // *Backend -> *liveState
-
-func (b *Backend) live() *liveState {
-	if v, ok := lives.Load(b); ok {
-		return v.(*liveState)
-	}
-	v, _ := lives.LoadOrStore(b, &liveState{
-		ready: make(chan struct{}), started: make(chan struct{}), sections: &sectionsProvider{},
-	})
-	return v.(*liveState)
+func newLiveState() *liveState {
+	return &liveState{ready: make(chan struct{}), started: make(chan struct{}), sections: &sectionsProvider{}}
 }
 
 // SetNotifications sets how new messages notify. Call it before Run.
 func (b *Backend) SetNotifications(n Notifications) {
-	l := b.live()
+	l := b.live
 	l.mu.Lock()
 	l.notif = n
 	l.mu.Unlock()
@@ -176,7 +164,7 @@ func (b *Backend) selfAlias() string { return b.teamID[1:] }
 // later one: the workspace is the store's, and the connection
 // disconnected.
 func (b *Backend) StartupMsgs(ctx context.Context) ([]tea.Msg, error) {
-	l := b.live()
+	l := b.live
 	select {
 	case <-l.ready:
 	case <-ctx.Done():
@@ -230,33 +218,13 @@ func (b *Backend) lastChannel(ctx context.Context, snap rooms.Snapshot) string {
 	return best
 }
 
-// applier is the part of *rooms.Model Run writes through.
-type applier interface {
-	Apply(ctx context.Context, b session.SyncBatch) (rooms.Changes, error)
-	ApplyDecrypted(ctx context.Context, d session.LateDecrypted) (rooms.Changes, error)
-}
-
-func (b *Backend) applier() applier {
-	if a, ok := b.rooms.(applier); ok {
-		return a
-	}
-	if b.d.Rooms != nil {
-		return b.d.Rooms
-	}
-	return nil
-}
-
 // Run applies the session's events to the room model and sends what they
 // change to the UI through send, until events is closed (nil) or ctx is
 // done (its error). See the top of this file for the startup handshake
 // with StartupMsgs and for what each change sends. An event the model
 // fails to apply is logged and skipped.
 func (b *Backend) Run(ctx context.Context, events <-chan session.Event, send func(tea.Msg)) error {
-	ap := b.applier()
-	if ap == nil {
-		return errors.New("svc: no room model to apply events to")
-	}
-	l := b.live()
+	l := b.live
 	r := &liveRun{b: b, l: l, send: send, typing: map[id.RoomID][]id.UserID{}, undecrypted: map[id.EventID]bool{}}
 	var tick <-chan time.Time
 	var ticker *time.Ticker
@@ -275,7 +243,7 @@ func (b *Backend) Run(ctx context.Context, events <-chan session.Event, send fun
 			if !ok {
 				return nil
 			}
-			if err := r.handle(ctx, ap, ev); err != nil {
+			if err := r.handle(ctx, ev); err != nil {
 				return err
 			}
 		}
@@ -305,13 +273,13 @@ type liveRun struct {
 
 // handle takes one session event. It returns an error only when ctx ends
 // while waiting for StartupMsgs.
-func (r *liveRun) handle(ctx context.Context, ap applier, ev session.Event) error {
+func (r *liveRun) handle(ctx context.Context, ev session.Event) error {
 	switch ev := ev.(type) {
 	case session.SyncBatch:
 		if ev.Resp == nil {
 			return nil
 		}
-		ch, err := ap.Apply(ctx, ev)
+		ch, err := r.b.rooms.Apply(ctx, ev)
 		if err != nil {
 			debuglog.General("matrix live: applying a sync: %v", err)
 			return nil
@@ -322,7 +290,7 @@ func (r *liveRun) handle(ctx context.Context, ap applier, ev session.Event) erro
 		}
 		r.changes(ctx, ch, !ev.Initial, false)
 	case session.LateDecrypted:
-		ch, err := ap.ApplyDecrypted(ctx, ev)
+		ch, err := r.b.rooms.ApplyDecrypted(ctx, ev)
 		if err != nil {
 			debuglog.General("matrix live: applying decrypted events of %s: %v", ev.Room, err)
 			return nil

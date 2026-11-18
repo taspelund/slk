@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -15,12 +15,11 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/matrix/ident"
 	"github.com/gammons/slk/internal/matrix/mxfmt"
 	"github.com/gammons/slk/internal/matrix/rooms"
+	"github.com/gammons/slk/internal/matrix/session"
 	"github.com/gammons/slk/internal/matrix/store"
-	"github.com/gammons/slk/internal/ui/sidebar"
 )
 
 const (
@@ -30,148 +29,66 @@ const (
 	general id.RoomID = "!general:example.org"
 )
 
-// fakeRooms is the room model over a real store: Backfill stores events
-// with TS values a real ident.Mapper mints, as rooms.Model does, and the
-// rest answers from fields the test sets.
-type fakeRooms struct {
-	t     *testing.T
-	st    *store.Store
-	ids   *ident.Mapper
-	names map[id.UserID]string
+// recRooms is the real room model, recording the fetched events the
+// backend hands it.
+type recRooms struct {
+	*rooms.Model
 
-	mu             sync.Mutex
-	readStates     map[string]core.ReadState
-	threadReceipts map[id.EventID]rooms.Receipt
-	backfilled     [][]id.EventID // each Backfill's event IDs, in the order given
+	mu         sync.Mutex
+	backfilled [][]id.EventID // each Backfill's event IDs, in the order given
+	filled     []fillCall
 }
 
-func (f *fakeRooms) room(room id.RoomID) rooms.Room {
-	return rooms.Room{ID: room, Alias: f.Resolver().RoomAlias(room), Name: strings.TrimPrefix(strings.Split(string(room), ":")[0], "!"), Kind: store.RoomChannel}
+// fillCall is one FillGap call.
+type fillCall struct {
+	gap    int64
+	events []id.EventID
+	next   string
 }
 
-func (f *fakeRooms) Room(alias string) (rooms.Room, bool) {
-	room, ok := f.Resolver().RoomID(alias)
-	if !ok {
-		return rooms.Room{}, false
-	}
-	return f.room(room), true
-}
-
-func (f *fakeRooms) RoomByID(room id.RoomID) (rooms.Room, bool) { return f.room(room), true }
-
-func (f *fakeRooms) Snapshot() rooms.Snapshot {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	rs := map[string]core.ReadState{}
-	for k, v := range f.readStates {
-		rs[k] = v
-	}
-	r := f.room(general)
-	return rooms.Snapshot{
-		Channels:   []sidebar.ChannelItem{{ID: r.Alias, Name: r.Name, Type: "channel"}},
-		ReadStates: rs,
-	}
-}
-
-func (f *fakeRooms) DisplayName(_ id.RoomID, user id.UserID) string {
-	if n, ok := f.names[user]; ok {
-		return n
-	}
-	return user.Localpart()
-}
-
-func (f *fakeRooms) ThreadReceipt(_ id.RoomID, thread id.EventID) (rooms.Receipt, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	r, ok := f.threadReceipts[thread]
-	return r, ok
-}
-
-func (f *fakeRooms) Resolver() mxfmt.Resolver { return fakeResolver{f} }
-
-// Backfill stores events, newest first, before the room's oldest.
-func (f *fakeRooms) Backfill(ctx context.Context, room id.RoomID, evs []*event.Event, _ []*event.Event) (rooms.Changes, error) {
-	var got []id.EventID
+func eventIDs(evs []*event.Event) []id.EventID {
+	var out []id.EventID
 	for _, e := range evs {
-		got = append(got, e.ID)
-		ts, err := f.ids.TSForBackfill(ctx, room, e.ID, time.UnixMilli(e.Timestamp))
-		if err != nil {
-			return rooms.Changes{}, err
-		}
-		f.put(room, e, ts)
+		out = append(out, e.ID)
 	}
-	f.mu.Lock()
-	f.backfilled = append(f.backfilled, got)
-	f.mu.Unlock()
-	return rooms.Changes{}, nil
+	return out
 }
 
-// put stores e with TS ts, deriving the relation columns from its content
-// as rooms.Model does.
-func (f *fakeRooms) put(room id.RoomID, e *event.Event, ts string) {
-	f.t.Helper()
-	raw := e.Content.VeryRaw
-	var c struct {
-		Body      string `json:"body"`
-		RelatesTo struct {
-			RelType string     `json:"rel_type"`
-			EventID id.EventID `json:"event_id"`
-		} `json:"m.relates_to"`
-	}
-	_ = json.Unmarshal(raw, &c)
-	row := store.Event{
-		RoomID: room, ID: e.ID, TS: ts, Sender: e.Sender, Type: e.Type.Type,
-		RelatesTo: c.RelatesTo.EventID, RelType: c.RelatesTo.RelType,
-		Content: raw, Body: c.Body, OriginServerTS: e.Timestamp,
-	}
-	if row.RelType == string(event.RelThread) {
-		row.ThreadRoot = row.RelatesTo
-	}
-	if err := f.st.PutEvent(context.Background(), row); err != nil {
-		f.t.Fatalf("PutEvent: %v", err)
-	}
+func (r *recRooms) Backfill(ctx context.Context, room id.RoomID, evs, state []*event.Event) (rooms.Changes, error) {
+	r.mu.Lock()
+	r.backfilled = append(r.backfilled, eventIDs(evs))
+	r.mu.Unlock()
+	return r.Model.Backfill(ctx, room, evs, state)
 }
 
-// fakeResolver resolves through the fake's ident.Mapper and names.
-type fakeResolver struct{ f *fakeRooms }
-
-func (r fakeResolver) UserAlias(user id.UserID) string {
-	a, err := r.f.ids.UserAlias(context.Background(), user)
-	if err != nil {
-		r.f.t.Errorf("UserAlias: %v", err)
-	}
-	return a
+func (r *recRooms) FillGap(ctx context.Context, room id.RoomID, gap int64, evs, state []*event.Event, next string, complete bool) (rooms.Changes, error) {
+	r.mu.Lock()
+	r.filled = append(r.filled, fillCall{gap, eventIDs(evs), next})
+	r.mu.Unlock()
+	return r.Model.FillGap(ctx, room, gap, evs, state, next, complete)
 }
 
-func (r fakeResolver) RoomAlias(room id.RoomID) string {
-	a, err := r.f.ids.RoomAlias(context.Background(), room)
-	if err != nil {
-		r.f.t.Errorf("RoomAlias: %v", err)
-	}
-	return a
+func (r *recRooms) backfills() [][]id.EventID {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.backfilled)
 }
 
-func (r fakeResolver) MXID(alias string) (id.UserID, bool) {
-	u, ok, _ := r.f.ids.MXID(context.Background(), alias)
-	return u, ok
+func (r *recRooms) fills() []fillCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.filled)
 }
 
-func (r fakeResolver) RoomID(alias string) (id.RoomID, bool) {
-	room, ok, _ := r.f.ids.RoomID(context.Background(), alias)
-	return room, ok
-}
-
-func (r fakeResolver) DisplayName(user id.UserID) string { return r.f.DisplayName("", user) }
-
-func (r fakeResolver) RoomName(room id.RoomID) string { return r.f.room(room).Name }
-
-// harness is a Backend over a temp store, the fake room model and, when
-// the test gives a handler, a client of an httptest homeserver.
+// harness is a Backend over a temp store, a real room model in which
+// self, alice and bob are in the public room general, and, when the test
+// gives a handler, a client of an httptest homeserver.
 type harness struct {
 	t     *testing.T
 	b     *Backend
-	f     *fakeRooms
+	m     *recRooms
 	st    *store.Store
+	ids   *ident.Mapper
 	alias string // general's alias
 	now   time.Time
 	n     int // events made so far
@@ -188,13 +105,19 @@ func newHarness(t *testing.T, handler http.HandlerFunc) *harness {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	f := &fakeRooms{
-		t: t, st: st, ids: ident.New(st),
-		names:          map[id.UserID]string{alice: "Alice Liddell", bob: "Bob", self: "Me"},
-		readStates:     map[string]core.ReadState{},
-		threadReceipts: map[id.EventID]rooms.Receipt{},
+	ids := ident.New(st)
+	model, err := rooms.New(ctx, st, ids, self)
+	if err != nil {
+		t.Fatalf("rooms.New: %v", err)
 	}
-	h := &harness{t: t, f: f, st: st, now: time.Date(2026, 11, 18, 15, 4, 0, 0, time.Local)}
+	h := &harness{t: t, m: &recRooms{Model: model}, st: st, ids: ids, now: time.Date(2026, 11, 1, 15, 4, 0, 0, time.Local)}
+	resp := lsync()
+	ljoin(resp, general).State.Events = []*event.Event{
+		lstate(t, "m.room.name", "", alice, map[string]any{"name": "general"}),
+		lstate(t, "m.room.join_rules", "", alice, map[string]any{"join_rule": "public"}),
+		lmember(t, alice, "Alice Liddell"), lmember(t, bob, "Bob"), lmember(t, self, "Me"),
+	}
+	h.apply(resp)
 	var cli *mautrix.Client
 	if handler != nil {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -209,41 +132,74 @@ func newHarness(t *testing.T, handler http.HandlerFunc) *harness {
 			t.Fatalf("NewClient: %v", err)
 		}
 	}
-	h.b = newBackend(Deps{Account: "test", Store: st, IDs: f.ids}, f, cli, self)
-	h.alias = f.Resolver().RoomAlias(general)
+	h.b = newBackend(Deps{Account: "test", Store: st, IDs: ids, Rooms: model}, h.m, cli, self)
+	h.alias = model.Resolver().RoomAlias(general)
 	return h
 }
 
-// ev builds an event of sender with content, a minute after the last one.
+// apply applies resp as a /sync response.
+func (h *harness) apply(resp *mautrix.RespSync) {
+	h.t.Helper()
+	if _, err := h.m.Apply(context.Background(), session.SyncBatch{Resp: resp}); err != nil {
+		h.t.Fatalf("Apply: %v", err)
+	}
+}
+
+// res is the model's resolver.
+func (h *harness) res() mxfmt.Resolver { return h.m.Resolver() }
+
+// tsOf returns ev's TS.
+func (h *harness) tsOf(ev id.EventID) string {
+	h.t.Helper()
+	ts, ok, err := h.ids.TS(context.Background(), general, ev)
+	if err != nil || !ok {
+		h.t.Fatalf("TS of %s: %v %v", ev, ok, err)
+	}
+	return ts
+}
+
+// redact redacts ev through /sync.
+func (h *harness) redact(ev id.EventID) {
+	h.t.Helper()
+	e := h.ev(alice, "m.room.redaction", map[string]any{"redacts": ev})
+	e.Redacts = ev
+	h.live(e)
+}
+
+// receipt applies an own receipt on ev (in thread, "" for none).
+func (h *harness) receipt(ev id.EventID, thread string) {
+	h.t.Helper()
+	r := map[string]any{"ts": 1}
+	if thread != "" {
+		r["thread_id"] = thread
+	}
+	resp := lsync()
+	ljoin(resp, general).Ephemeral.Events = []*event.Event{lmk(h.t, "m.receipt", "", "", 0, nil, map[string]any{
+		string(ev): map[string]any{"m.read": map[string]any{string(self): r}},
+	})}
+	h.apply(resp)
+}
+
+// ev builds an event of sender with content, a minute after the last
+// one, as one parsed from the server's JSON.
 func (h *harness) ev(sender id.UserID, typ string, content map[string]any) *event.Event {
 	h.t.Helper()
 	h.n++
-	raw, err := json.Marshal(content)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	return &event.Event{
-		ID:        id.EventID("$ev" + itoa3(h.n)),
-		RoomID:    general,
-		Sender:    sender,
-		Type:      event.Type{Type: typ, Class: event.MessageEventType},
-		Timestamp: h.now.Add(time.Duration(h.n) * time.Minute).UnixMilli(),
-		Content:   event.Content{VeryRaw: raw},
-	}
+	e := lmk(h.t, typ, id.EventID("$ev"+itoa3(h.n)), sender, h.now.Add(time.Duration(h.n)*time.Minute).UnixMilli(), nil, content)
+	e.RoomID = general
+	return e
 }
 
 func itoa3(n int) string {
 	return string([]byte{byte('0' + n/100%10), byte('0' + n/10%10), byte('0' + n%10)})
 }
 
-// live stores e as /sync would, returning its TS.
+// live applies e through /sync, returning its TS ("" for an event the
+// model does not store, such as a redaction).
 func (h *harness) live(e *event.Event) string {
 	h.t.Helper()
-	ts, err := h.f.ids.TSForLive(context.Background(), general, e.ID, time.UnixMilli(e.Timestamp))
-	if err != nil {
-		h.t.Fatalf("TSForLive: %v", err)
-	}
-	h.f.put(general, e, ts)
+	h.apply(timeline(general, e))
+	ts, _, _ := h.ids.TS(context.Background(), general, e.ID)
 	return ts
 }
 
@@ -285,7 +241,7 @@ func wires(evs ...*event.Event) []map[string]any {
 
 func TestTeamIDIsMPlusTheAccountsAlias(t *testing.T) {
 	h := newHarness(t, nil)
-	want := "M" + h.f.Resolver().UserAlias(self)
+	want := "M" + h.res().UserAlias(self)
 	if h.b.TeamID() != want || len(want) != 12 {
 		t.Fatalf("TeamID = %q, want %q", h.b.TeamID(), want)
 	}

@@ -31,7 +31,7 @@ func byTS(items []core.MessageItem, ts string) (core.MessageItem, bool) {
 
 func TestItemsRenderEachKindOfMessage(t *testing.T) {
 	h := newHarness(t, nil)
-	res := h.f.Resolver()
+	res := h.res()
 
 	_, plainTS := h.text(alice, "hello <world>")
 	html := h.ev(bob, "m.room.message", map[string]any{
@@ -55,9 +55,7 @@ func TestItemsRenderEachKindOfMessage(t *testing.T) {
 		"m.relates_to":  map[string]any{"rel_type": "m.replace", "event_id": edited.ID},
 	}))
 	redacted, redactedTS := h.text(bob, "oops")
-	if err := h.st.RedactEvent(context.Background(), general, redacted.ID); err != nil {
-		t.Fatal(err)
-	}
+	h.redact(redacted.ID)
 	enc := h.ev(alice, "m.room.encrypted", map[string]any{"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "xyz"})
 	encTS := h.live(enc)
 	reply := h.ev(bob, "m.room.message", map[string]any{
@@ -77,9 +75,7 @@ func TestItemsRenderEachKindOfMessage(t *testing.T) {
 
 	deadRoot, deadRootTS := h.text(bob, "deleted root")
 	h.live(h.ev(alice, "m.room.message", map[string]any{"msgtype": "m.text", "body": "orphan", "m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": deadRoot.ID}}))
-	if err := h.st.RedactEvent(context.Background(), general, deadRoot.ID); err != nil {
-		t.Fatal(err)
-	}
+	h.redact(deadRoot.ID)
 
 	reacted, reactedTS := h.text(bob, "react to me")
 	react := func(sender id.UserID, key string) id.EventID {
@@ -95,9 +91,7 @@ func TestItemsRenderEachKindOfMessage(t *testing.T) {
 	react(bob, "❤️")
 	react(alice, "👍🏽")
 	gone := react(bob, "lol")
-	if err := h.st.RedactEvent(context.Background(), general, gone); err != nil {
-		t.Fatal(err)
-	}
+	h.redact(gone)
 
 	items := h.page()
 	get := func(ts string) core.MessageItem {
