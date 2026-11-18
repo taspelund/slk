@@ -35,26 +35,200 @@ package rooms
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"sync"
+	"time"
 
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+	"maunium.net/go/mautrix/sqlstatestore"
 
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/matrix/ident"
 	"github.com/gammons/slk/internal/matrix/mxfmt"
 	"github.com/gammons/slk/internal/matrix/session"
 	"github.com/gammons/slk/internal/matrix/store"
+	"github.com/gammons/slk/internal/text"
 	"github.com/gammons/slk/internal/ui/sidebar"
 )
 
 // Model holds the account's rooms in memory, backed by the store. It is
 // safe for concurrent use: Apply and Backfill are serialized; snapshots and
 // lookups may run alongside them.
-type Model struct{}
+//
+// Writers work on copies of the rooms they change and publish them when
+// done, so readers never wait for a writer's I/O and never see half a
+// batch.
+type Model struct {
+	st   *store.Store
+	ids  *ident.Mapper
+	ss   *sqlstatestore.SQLStateStore
+	self id.UserID
+	now  func() time.Time
+
+	// wmu serializes Apply, ApplyDecrypted and Backfill.
+	wmu sync.Mutex
+
+	// mu guards the fields below. Each is replaced, never modified, once
+	// published, except rooms, which is only written under mu.
+	mu      sync.RWMutex
+	rooms   map[id.RoomID]*room
+	byAlias map[string]id.RoomID
+	// edges are the space edges: child room -> space -> order.
+	edges map[id.RoomID]map[id.RoomID]string
+	// direct is the latest m.direct (room -> users), nil until one
+	// arrives after New.
+	direct map[id.RoomID][]id.UserID
+	// global is every known user's global display name.
+	global map[id.UserID]string
+
+	aliasMu   sync.Mutex
+	aliasOf   map[id.UserID]string
+	aliasUser map[string]id.UserID
+}
 
 // New loads the account's rooms from st. self is the account's user ID.
+//
+// Members and join rules are read from mautrix's state store on st.DB,
+// which the model also writes (the session's syncer writes the same rows).
+// The explicit name, heroes and member counts are not stored, so a
+// restarted model treats a room's stored name as its m.room.name when it
+// differs from the name it would compute, and computes heroes from the
+// stored members until the next summary.
 func New(ctx context.Context, st *store.Store, ids *ident.Mapper, self id.UserID) (*Model, error) {
-	panic("rooms: New not implemented (WP-Rooms)")
+	ss := sqlstatestore.NewSQLStateStore(st.DB, nil, false)
+	if err := ss.Upgrade(ctx); err != nil {
+		return nil, fmt.Errorf("rooms: state store: %w", err)
+	}
+	m := &Model{
+		st: st, ids: ids, ss: ss, self: self, now: time.Now,
+		rooms: map[id.RoomID]*room{}, byAlias: map[string]id.RoomID{},
+		edges:   map[id.RoomID]map[id.RoomID]string{},
+		aliasOf: map[id.UserID]string{}, aliasUser: map[string]id.UserID{},
+	}
+	if err := m.load(ctx); err != nil {
+		return nil, fmt.Errorf("rooms: loading: %w", err)
+	}
+	return m, nil
+}
+
+func (m *Model) load(ctx context.Context) error {
+	rows, err := m.st.ListRooms(ctx)
+	if err != nil {
+		return err
+	}
+	edges, err := m.st.SpaceParents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, e := range edges {
+		if m.edges[e.RoomID] == nil {
+			m.edges[e.RoomID] = map[id.RoomID]string{}
+		}
+		m.edges[e.RoomID][e.SpaceID] = e.Order
+	}
+	receipts, err := m.st.UserReceipts(ctx, m.self)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		alias, err := m.roomAlias(ctx, row.ID)
+		if err != nil {
+			return err
+		}
+		r := newRoom(row.ID, alias)
+		r.row = row
+		members, err := m.ss.GetRoomMembers(ctx, row.ID)
+		if err != nil {
+			return err
+		}
+		for u, mem := range members {
+			if _, err := m.userAlias(ctx, u); err != nil {
+				return err
+			}
+			r.members[u] = member{name: mem.Displayname, membership: mem.Membership}
+		}
+		if jr, err := m.ss.GetJoinRules(ctx, row.ID); err != nil {
+			return err
+		} else if jr != nil {
+			r.joinRule = jr.JoinRule
+		} else if row.Kind == store.RoomChannel {
+			r.joinRule = event.JoinRulePublic
+		}
+		switch row.Kind {
+		case store.RoomDM:
+			r.direct = true
+			if row.DMUserID != "" {
+				r.directUsers = []id.UserID{row.DMUserID}
+			}
+		case store.RoomGroupDM:
+			r.direct, r.minOthers = true, 2
+		}
+		if row.JoinState == store.Invited && row.Kind == store.RoomDM {
+			r.direct, r.directUsers, r.inviteDirect, r.inviter = false, nil, true, row.DMUserID
+		}
+		if r.candTS, err = m.st.LatestUnreadCandidate(ctx, row.ID, m.self); err != nil {
+			return err
+		}
+		if r.ownTS, err = m.st.LatestSentBy(ctx, row.ID, m.self); err != nil {
+			return err
+		}
+		if row.DMUserID != "" {
+			if _, err := m.userAlias(ctx, row.DMUserID); err != nil {
+				return err
+			}
+		}
+		m.rooms[row.ID] = r
+		m.byAlias[alias] = row.ID
+	}
+	for _, rec := range receipts {
+		if r := m.rooms[rec.RoomID]; r != nil {
+			r.receipts[rec.ThreadID] = rec
+		}
+	}
+	m.global = buildGlobal(m.rooms)
+	dn := func(rid id.RoomID, user id.UserID) string { return displayName(m.rooms[rid], m.global, user) }
+	for _, r := range m.rooms {
+		kind, dmUser := r.kind(m.self)
+		if computed := r.name(m.self, kind, dmUser, dn); r.row.Name != "" && r.row.Name != computed {
+			name := r.row.Name
+			r.explicitName = &name
+		}
+	}
+	return nil
+}
+
+// roomAlias returns room's alias, minting it if needed.
+func (m *Model) roomAlias(ctx context.Context, room id.RoomID) (string, error) {
+	return m.ids.RoomAlias(ctx, room)
+}
+
+// userAlias returns user's alias, minting it if needed, and caches it for
+// the Resolver.
+func (m *Model) userAlias(ctx context.Context, user id.UserID) (string, error) {
+	m.aliasMu.Lock()
+	a, ok := m.aliasOf[user]
+	m.aliasMu.Unlock()
+	if ok {
+		return a, nil
+	}
+	a, err := m.ids.UserAlias(ctx, user)
+	if err != nil {
+		return "", err
+	}
+	m.aliasMu.Lock()
+	m.aliasOf[user], m.aliasUser[a] = a, user
+	m.aliasMu.Unlock()
+	return a, nil
+}
+
+// cachedUserAlias returns user's alias if the model has seen it.
+func (m *Model) cachedUserAlias(user id.UserID) (string, bool) {
+	m.aliasMu.Lock()
+	defer m.aliasMu.Unlock()
+	a, ok := m.aliasOf[user]
+	return a, ok
 }
 
 // Apply takes in one /sync response: room state, timeline events, receipts,
@@ -63,19 +237,92 @@ func New(ctx context.Context, st *store.Store, ids *ident.Mapper, self id.UserID
 // new event. Events that are still encrypted are stored as such and
 // replaced when a LateDecrypted delivers them.
 func (m *Model) Apply(ctx context.Context, b session.SyncBatch) (Changes, error) {
-	panic("rooms: Apply not implemented (WP-Rooms)")
+	m.wmu.Lock()
+	defer m.wmu.Unlock()
+	if b.Resp == nil {
+		return Changes{}, nil
+	}
+	return m.apply(ctx, b.Resp)
 }
 
 // ApplyDecrypted replaces stored encrypted events with their decrypted form.
 func (m *Model) ApplyDecrypted(ctx context.Context, d session.LateDecrypted) (Changes, error) {
-	panic("rooms: ApplyDecrypted not implemented (WP-Rooms)")
+	m.wmu.Lock()
+	defer m.wmu.Unlock()
+	b := m.newBatch(ctx)
+	r, err := b.room(d.Room)
+	if err != nil {
+		return Changes{}, err
+	}
+	for _, evt := range d.Events {
+		if evt.ID == "" || evt.StateKey != nil {
+			continue
+		}
+		switch evt.Type.Type {
+		case typeMessage, typeSticker, typeEncrypted, typeReaction:
+		default:
+			continue
+		}
+		ts, ok, err := m.ids.TS(ctx, d.Room, evt.ID)
+		if err != nil {
+			return Changes{}, err
+		}
+		if !ok {
+			if ts, err = b.liveTS(d.Room, evt); err != nil {
+				return Changes{}, err
+			}
+		}
+		if err := b.storeEvent(r, evt, ts, true); err != nil {
+			return Changes{}, fmt.Errorf("rooms: decrypted %s: %w", evt.ID, err)
+		}
+	}
+	return b.finish()
 }
 
 // Backfill takes in events fetched by paging back in room (newest first, as
 // /messages returns them with dir=b), minting TS values before the room's
 // oldest. state is the response's state (member events for the senders).
+//
+// Member events in state name senders the model has no member event for;
+// they never replace a newer one. State events among events are history
+// and do not change the room's state.
 func (m *Model) Backfill(ctx context.Context, room id.RoomID, events []*event.Event, state []*event.Event) (Changes, error) {
-	panic("rooms: Backfill not implemented (WP-Rooms)")
+	m.wmu.Lock()
+	defer m.wmu.Unlock()
+	b := m.newBatch(ctx)
+	r, err := b.room(room)
+	if err != nil {
+		return Changes{}, err
+	}
+	for _, evt := range state {
+		if evt.StateKey == nil || evt.Type.Type != event.StateMember.Type {
+			continue
+		}
+		if _, ok := r.members[id.UserID(*evt.StateKey)]; ok {
+			continue
+		}
+		if err := b.applyMember(r, id.UserID(*evt.StateKey), evt); err != nil {
+			return Changes{}, err
+		}
+	}
+	for _, evt := range events {
+		if evt.ID == "" || evt.StateKey != nil {
+			continue
+		}
+		switch evt.Type.Type {
+		case typeMessage, typeSticker, typeEncrypted, typeReaction:
+		default:
+			continue
+		}
+		ts, err := m.ids.TSForBackfill(ctx, room, evt.ID, time.UnixMilli(evt.Timestamp))
+		if err != nil {
+			return Changes{}, err
+		}
+		if err := b.storeEvent(r, evt, ts, false); err != nil {
+			return Changes{}, fmt.Errorf("rooms: backfilled %s: %w", evt.ID, err)
+		}
+	}
+	return b.finish()
 }
 
 // Changes is what one Apply, ApplyDecrypted or Backfill changed. svc turns
@@ -165,33 +412,189 @@ type Snapshot struct {
 }
 
 // Snapshot returns the current sidebar view.
+//
+// Sections are the spaces that hold at least one sidebar room (type
+// "standard", ID the space's room alias), by name, then "Rooms" (type
+// "channels") and "Direct Messages" (type "direct_messages"). Channels and
+// Finder list the joined rooms that are not spaces, by section, then name
+// (case- and accent-folded, as the sidebar sorts within a section), then
+// alias; SectionOrder is the section's position from 1. ChannelNames
+// holds every room the model knows, UserNames every user with a member
+// event, both keyed by alias. Each call builds new maps and slices.
 func (m *Model) Snapshot() Snapshot {
-	panic("rooms: Snapshot not implemented (WP-Rooms)")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	get := func(rid id.RoomID) *room { return m.rooms[rid] }
+
+	type entry struct {
+		r       *room
+		section string
+	}
+	var entries []entry
+	spaces := map[string]*room{}
+	for _, r := range m.rooms {
+		if !r.sidebar() {
+			continue
+		}
+		sec := sectionOf(r, get, m.edges)
+		if sec != sectionRooms && sec != sectionDMs {
+			spaces[sec] = m.rooms[m.byAlias[sec]]
+		}
+		entries = append(entries, entry{r, sec})
+	}
+	var spaceIDs []string
+	for sec := range spaces {
+		spaceIDs = append(spaceIDs, sec)
+	}
+	slices.SortFunc(spaceIDs, func(a, b string) int {
+		if na, nb := text.Fold(spaces[a].row.Name), text.Fold(spaces[b].row.Name); na != nb {
+			return cmpString(na, nb)
+		}
+		return cmpString(a, b)
+	})
+	snap := Snapshot{
+		ChannelNames: map[string]string{},
+		UserNames:    map[string]string{},
+		ReadStates:   map[string]core.ReadState{},
+	}
+	rank := map[string]int{}
+	for _, sec := range spaceIDs {
+		rank[sec] = len(snap.Sections)
+		snap.Sections = append(snap.Sections, sidebar.SectionMeta{ID: sec, Name: spaces[sec].row.Name, Type: "standard"})
+	}
+	rank[sectionRooms] = len(snap.Sections)
+	snap.Sections = append(snap.Sections, sidebar.SectionMeta{ID: sectionRooms, Name: "Rooms", Type: "channels"})
+	rank[sectionDMs] = len(snap.Sections)
+	snap.Sections = append(snap.Sections, sidebar.SectionMeta{ID: sectionDMs, Name: "Direct Messages", Type: "direct_messages"})
+
+	slices.SortFunc(entries, func(a, b entry) int {
+		if rank[a.section] != rank[b.section] {
+			return rank[a.section] - rank[b.section]
+		}
+		if na, nb := text.Fold(a.r.row.Name), text.Fold(b.r.row.Name); na != nb {
+			return cmpString(na, nb)
+		}
+		return cmpString(a.r.alias, b.r.alias)
+	})
+	for _, e := range entries {
+		r := e.r
+		dm := ""
+		if r.row.DMUserID != "" {
+			dm, _ = m.cachedUserAlias(r.row.DMUserID)
+		}
+		snap.Channels = append(snap.Channels, sidebar.ChannelItem{
+			ID: r.alias, Name: r.row.Name, Type: string(r.row.Kind), Section: e.section,
+			SectionOrder: rank[e.section] + 1, DMUserID: dm,
+		})
+		snap.Finder = append(snap.Finder, core.ChannelFinderItem{
+			ID: r.alias, Name: r.row.Name, Type: string(r.row.Kind), Joined: true, DMUserID: dm,
+		})
+		snap.ReadStates[r.alias] = r.readState()
+	}
+	for _, r := range m.rooms {
+		snap.ChannelNames[r.alias] = r.row.Name
+		for u := range r.members {
+			if a, ok := m.cachedUserAlias(u); ok {
+				if _, done := snap.UserNames[a]; !done {
+					snap.UserNames[a] = displayName(nil, m.global, u)
+				}
+			}
+		}
+	}
+	return snap
+}
+
+func cmpString(a, b string) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
 }
 
 // Room returns the room an alias names.
 func (m *Model) Room(alias string) (Room, bool) {
-	panic("rooms: Room not implemented (WP-Rooms)")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rid, ok := m.byAlias[alias]
+	if !ok {
+		return Room{}, false
+	}
+	return m.roomLocked(rid)
 }
 
 // RoomByID returns a room by its Matrix ID.
 func (m *Model) RoomByID(room id.RoomID) (Room, bool) {
-	panic("rooms: RoomByID not implemented (WP-Rooms)")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.roomLocked(room)
+}
+
+// roomLocked builds the Room for rid; m.mu is held. Section is the
+// sidebar section ID, "" for a room that is not a sidebar row.
+func (m *Model) roomLocked(rid id.RoomID) (Room, bool) {
+	r := m.rooms[rid]
+	if r == nil {
+		return Room{}, false
+	}
+	return Room{
+		ID: rid, Alias: r.alias, Name: r.row.Name, Kind: r.row.Kind, Encrypted: r.row.Encrypted,
+		DMUser:  r.row.DMUserID,
+		Section: sidebarSection(r, func(s id.RoomID) *room { return m.rooms[s] }, m.edges),
+	}, true
 }
 
 // DisplayName returns a user's display name in room ("" room for the
 // global one), falling back to the localpart.
-func (m *Model) DisplayName(room id.RoomID, user id.UserID) string {
-	panic("rooms: DisplayName not implemented (WP-Rooms)")
+//
+// The name in a room is the user's member event's displayname there; the
+// global one is the first non-empty displayname of their member events
+// across rooms (by room ID), since the model does not fetch profiles.
+func (m *Model) DisplayName(rid id.RoomID, user id.UserID) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var r *room
+	if rid != "" {
+		r = m.rooms[rid]
+	}
+	return displayName(r, m.global, user)
 }
 
 // Resolver returns an mxfmt.Resolver over the model's aliases and names.
 // Its methods do not block on I/O beyond minting a new alias.
 func (m *Model) Resolver() mxfmt.Resolver {
-	panic("rooms: Resolver not implemented (WP-Rooms)")
+	return resolver{m}
 }
 
-// ThreadReceipt returns the account's receipt in a thread.
+// ThreadReceipt returns the account's receipt in a thread: the later of
+// its receipt for that thread and its unthreaded receipt (which covers
+// threads too). Thread is set to thread either way.
 func (m *Model) ThreadReceipt(room id.RoomID, thread id.EventID) (Receipt, bool) {
-	panic("rooms: ThreadReceipt not implemented (WP-Rooms)")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	r := m.rooms[room]
+	if r == nil || thread == "" {
+		return Receipt{}, false
+	}
+	t, okT := r.receipts[string(thread)]
+	u, okU := r.receipts[""]
+	var rec store.Receipt
+	switch {
+	case okT && okU:
+		rec = t
+		if u.TS > t.TS {
+			rec = u
+		}
+	case okT:
+		rec = t
+	case okU:
+		rec = u
+	default:
+		return Receipt{}, false
+	}
+	out := receiptOf(rec)
+	out.Thread = thread
+	return out, true
 }
